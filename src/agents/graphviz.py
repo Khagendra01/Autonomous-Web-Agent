@@ -26,6 +26,7 @@ class StateGraphViz:
     def _labels(self):
         return {n['id']: f"{n['id']}\n{n.get('label','')}" for n in self.nodes}
 
+    # this is linear state graph not the website linear dont forget this later
     def render_linear(self, out='state_graph_linear.png'):
         G = nx.DiGraph()
         for n in self.nodes:
