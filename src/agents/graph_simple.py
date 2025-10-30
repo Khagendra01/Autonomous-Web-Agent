@@ -47,6 +47,14 @@ def observe_node(state: AgentState) -> AgentState:
     print(f"  URL: {state.current_url}")
     print(f"  Elements: {len(obs.get('interactables', []))}")
     
+    # ⚡ Show priority buttons found
+    interactables = obs.get('interactables', [])
+    priority_count = sum(1 for item in interactables 
+                        if any(word in (item.get('label') or '').lower() 
+                               for word in ['create', 'new', 'add', '+']))
+    if priority_count > 0:
+        print(f"  🎯 Found {priority_count} create/new/add button(s)")
+    
     return state
 
 
@@ -69,12 +77,17 @@ def act_node(state: AgentState) -> AgentState:
         state.action_history.append(state.last_action)
         state.step_count += 1
         
+        # ⚡ Track action results for LLM feedback
         if result.get('ok'):
+            state.last_action_result = "✓ Success"
             print(f"  ✓ Success")
         else:
-            print(f"  ✗ Failed: {result.get('error')}")
+            error_msg = result.get('error', 'Unknown error')
+            state.last_action_result = f"✗ Failed: {error_msg}"
+            print(f"  ✗ Failed: {error_msg}")
             
     except Exception as e:
+        state.last_action_result = f"✗ Exception: {str(e)}"
         print(f"  ✗ Error: {e}")
     
     return state

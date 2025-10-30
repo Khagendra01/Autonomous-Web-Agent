@@ -63,14 +63,42 @@ Respond in JSON: {{"app": "app_name", "url": "https://..."}}"""
         obs = state.observation or {}
         interactables = obs.get('interactables', [])
         
-        # Format available elements (keep it simple - just show first 20)
+        # ⚡ IMPROVEMENT 1: Prioritize "create" buttons and show more elements (up to 100)
+        priority_elements = []
+        regular_elements = []
+        
+        for item in interactables:
+            label = (item.get('label') or '').lower()
+            if any(word in label for word in ['create', 'new', 'add', '+']) or label == '+':
+                priority_elements.append(item)
+            else:
+                regular_elements.append(item)
+        
+        # Show priority elements first, then regular, up to 100 total
+        ordered_elements = priority_elements + regular_elements
+        display_elements = ordered_elements[:100]
+        
         elements_text = "\n".join([
             f"{i+1}. {item.get('role')} - \"{item.get('label', 'no label')}\" (selector: {item.get('selector')})"
-            for i, item in enumerate(interactables[:20])
+            for i, item in enumerate(display_elements)
         ])
         
-        if len(interactables) > 20:
-            elements_text += f"\n... and {len(interactables) - 20} more elements"
+        if len(interactables) > 100:
+            elements_text += f"\n... and {len(interactables) - 100} more elements"
+        
+        # ⚡ IMPROVEMENT 2: Detect infinite loops
+        loop_warning = ""
+        recent_actions = state.action_history[-5:] if len(state.action_history) >= 5 else []
+        
+        if len(recent_actions) >= 3:
+            # Check if last 3 actions are identical
+            if recent_actions[-1] == recent_actions[-2] == recent_actions[-3]:
+                loop_warning = f"\n\n⚠️ LOOP DETECTED: You've repeated '{recent_actions[-1]}' 3+ times with no progress!\nTry a COMPLETELY DIFFERENT action - scroll to find new elements, or try a different button."
+        
+        # ⚡ IMPROVEMENT 3: Provide action result feedback
+        action_result = ""
+        if state.last_action_result:
+            action_result = f"\nLAST ACTION RESULT: {state.last_action_result}"
         
         # Simple prompt - let LLM figure everything out
         prompt = f"""You are a web automation agent.
@@ -79,15 +107,20 @@ GOAL: {state.goal}
 CURRENT URL: {state.current_url}
 STEP: {state.step_count}/{state.max_steps}
 
-AVAILABLE ELEMENTS:
+AVAILABLE ELEMENTS ({len(display_elements)} shown, priority buttons listed first):
 {elements_text if elements_text else "No elements found"}
 
-LAST ACTION: {state.last_action or 'None'}
+LAST ACTION: {state.last_action or 'None'}{action_result}{loop_warning}
 
 What should you do next? Choose from:
 - click: Click an element (provide exact selector from list)
 - type: Type text into an input (provide selector and text)
-- scroll: Scroll the page
+- scroll: Scroll the page to reveal more elements
+
+IMPORTANT:
+- If you see a loop warning, you MUST try something different (scroll or different button)
+- Only use selectors EXACTLY as shown in the list above
+- "Create" and "New" buttons are shown first to help you find them quickly
 
 Respond in JSON:
 {{
