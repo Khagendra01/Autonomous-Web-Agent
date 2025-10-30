@@ -430,12 +430,18 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
                 focused_bytes = crop_resp.content
                 screenshots = state.get('screenshots') or []
                 screenshots = screenshots + [focused_bytes]
+                # Track that this focused screenshot corresponds to the current step index
+                focused_after_steps = set(state.get('focused_after_steps') or [])
+                focused_after_steps.add(state.get('step_count', 0))
             else:
                 screenshots = state.get('screenshots') or []
+                focused_after_steps = set(state.get('focused_after_steps') or [])
         else:
             screenshots = state.get('screenshots') or []
+            focused_after_steps = set(state.get('focused_after_steps') or [])
     except Exception:
         screenshots = state.get('screenshots') or []
+        focused_after_steps = set(state.get('focused_after_steps') or [])
 
     # Execute via driver
     try:
@@ -475,6 +481,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'stuck_count': 0,
             'tried_actions_by_url': tried_map,
             'screenshots': screenshots,
+            'focused_after_steps': list(focused_after_steps),
         }
         
     except Exception as e:

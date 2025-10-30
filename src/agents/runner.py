@@ -145,20 +145,38 @@ def run_task(
         print(f"💾 Saving results")
         print(f"{'='*60}")
         
-        # Save screenshots
-        for i, screenshot in enumerate(final_state['screenshots']):
-            filename = f"step_{i:03d}.png"
-            path = storage.save_screenshot(screenshot, filename)
-            print(f"  Saved: {filename}")
-            
-            # Add to manifest
-            action = final_state['action_history'][i] if i < len(final_state['action_history']) else None
+        # Save screenshots per step, pairing full and focused where available
+        screenshots = final_state.get('screenshots') or []
+        focused_after_steps = set(final_state.get('focused_after_steps') or [])
+
+        j = 0  # index into screenshots list
+        step = 0
+        while j < len(screenshots):
+            # Full screenshot for this step
+            full_name = f"step_{step:03d}.png"
+            storage.save_screenshot(screenshots[j], full_name)
+            print(f"  Saved: {full_name}")
+
+            # Optional focused screenshot for this step
+            crop_name = ""
+            if step in focused_after_steps and (j + 1) < len(screenshots):
+                crop_name = f"step_{step:03d}_focus.png"
+                storage.save_screenshot(screenshots[j + 1], crop_name)
+                print(f"  Saved: {crop_name}")
+                j += 2
+            else:
+                j += 1
+
+            # Add to manifest with a pair [full, focused or empty]
+            action = final_state['action_history'][step] if step < len(final_state['action_history']) else None
             storage.append_state({
-                'step': i,
-                'screenshot': filename,
-                'url': final_state['current_url'] if i == len(final_state['screenshots']) - 1 else None,
+                'step': step,
+                'screenshot': [full_name, crop_name],
+                'url': final_state['current_url'] if step == (final_state['step_count'] - 1) else None,
                 'action': action,
             })
+
+            step += 1
         
         # Save manifest
         storage.flush()
