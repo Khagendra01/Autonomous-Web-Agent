@@ -238,10 +238,20 @@ Return ONLY the JSON array, no additional text."""
             for a in scored_actions_raw
         ]
 
-        # Sort by the LLM-provided score only (no heuristics)
-        adjusted: List[ScoredAction] = sorted(scored_actions, key=lambda x: x.score, reverse=True)
+        # Deduplicate by action_type|selector key, keeping the highest-scored instance
+        unique_by_key: Dict[str, ScoredAction] = {}
+        for a in scored_actions:
+            k = _action_key_from_scored(a)
+            existing = unique_by_key.get(k)
+            if existing is None or a.score > existing.score:
+                unique_by_key[k] = a
 
-        print(f"  Scored {len(adjusted)} actions")
+        deduped: List[ScoredAction] = list(unique_by_key.values())
+
+        # Sort by the LLM-provided score only (no heuristics)
+        adjusted: List[ScoredAction] = sorted(deduped, key=lambda x: x.score, reverse=True)
+
+        print(f"  Scored {len(adjusted)} actions (deduped)")
         # Show top 3 as a quick summary
         for i, action in enumerate(adjusted[:3]):
             print(f"  {i+1}. [{action.score:.1f}] {action.action_type} '{action.label}' - {action.reasoning}")
