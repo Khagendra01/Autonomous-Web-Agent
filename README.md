@@ -9,6 +9,7 @@ Local-first autonomous web agent using **LangGraph**, **OpenAI GPT-4o**, and **P
 - 🌐 **Playwright automation**: Browser control with accessibility tree
 - 💾 **State capture**: Screenshots and interaction history
 - 🔐 **Persistent auth**: Chrome profile preserves login sessions
+- 🐭 **Flood Fill Agent** ⭐ NEW: Autonomous exploration inspired by Micromouse algorithm
 
 ## Quick Start
 
@@ -61,8 +62,15 @@ python -m src.drivers.playwright_driver
 ```
 
 **Terminal 2 - Run Agent:**
+
+**Option A: Simple Agent** (one-shot execution)
 ```bash
-python -m src.agents.graph run linear "create a project in linear named alpha"
+python -m src.agents.graph_simple run "create a project in linear named alpha"
+```
+
+**Option B: Flood Fill Agent** ⭐ NEW (learns and reuses knowledge)
+```bash
+python -m src.agents.graph_flood_fill run "create a project in linear named alpha"
 ```
 
 The agent will:
@@ -70,6 +78,14 @@ The agent will:
 2. Use GPT-4o to reason about what to do
 3. Click buttons, type text, scroll as needed
 4. Validate when the goal is achieved
+
+**Flood Fill Agent** also:
+- 🗺️ Builds a state space graph (like maze solving)
+- 🧠 Learns optimal paths via flood fill algorithm
+- 💾 Saves knowledge to `knowledge/graphs/{app}_graph.json`
+- ⚡ Reuses learned paths on subsequent runs (faster!)
+
+See [FLOOD_FILL_AGENT.md](./FLOOD_FILL_AGENT.md) for detailed documentation.
 
 ## Architecture
 

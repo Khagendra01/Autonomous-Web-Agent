@@ -56,6 +56,7 @@ class AgentState(BaseModel):
     
     # Current state
     current_url: Optional[str] = None
+    current_fingerprint: Optional[str] = None  # Current DOM fingerprint (state ID)
     observation: Dict[str, Any] = {}
     screenshot: Optional[bytes] = None
     
@@ -68,6 +69,7 @@ class AgentState(BaseModel):
     # History
     last_action: Optional[str] = None
     last_action_result: Optional[str] = None  # Result of last action (success/error)
+    last_fingerprint: Optional[str] = None  # Previous state fingerprint
     action_history: List[str] = []
     consecutive_failures: int = 0  # Track consecutive failed actions
     failed_action_type: Optional[str] = None  # Type of action that's failing

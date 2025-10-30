@@ -249,6 +249,78 @@
       "semantic": [
         "create"
       ]
+    },
+    {
+      "label": "Bro is a nightmare for newbies \u2620\ufe0f ll Clash of clans ll #shorts #clashofclans #coc",
+      "role": "link",
+      "selector": "role=link[name=\"Bro is a nightmare for newbies \u2620\ufe0f ll Clash of clans ll #shorts #clashofclans #coc\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Know Yourself! Take This LGBTQ Quiz To Find Out If You Are Actually Straight.",
+      "role": "link",
+      "selector": "role=link[name=\"Know Yourself! Take This LGBTQ Quiz To Find Out If You Are Actually Straight.\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "13News Now",
+      "role": "link",
+      "selector": "role=link[name=\"13News Now\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "New Season | Kaun Banega Crorepati S17 | \u0939\u0901\u0938\u0924\u0947-\u0939\u0901\u0938\u0924\u0947 Big B \u0915\u0947 \u0906\u0901\u0938\u0942 \u0928\u093f\u0915\u0932 \u0917\u090f | Best Moments 8 minutes, 4 seconds",
+      "role": "link",
+      "selector": "role=link[name=\"New Season | Kaun Banega Crorepati S17 | \u0939\u0901\u0938\u0924\u0947-\u0939\u0901\u0938\u0924\u0947 Big B \u0915\u0947 \u0906\u0901\u0938\u0942 \u0928\u093f\u0915\u0932 \u0917\u090f | Best Moments 8 minutes, 4 seconds\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Getting Rick Rolled by teacher Credit laxkid33 #Shorts",
+      "role": "link",
+      "selector": "role=link[name=\"Getting Rick Rolled by teacher Credit laxkid33 #Shorts\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Old Rick Astley vs New Rick Astley (RickRoll) #memes #shorts",
+      "role": "link",
+      "selector": "role=link[name=\"Old Rick Astley vs New Rick Astley (RickRoll) #memes #shorts\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "B-rad examines Clash Royale's updates over the past year, detailing monetization strategies. The video analyzes various in-game purchases and their impact on gameplay. A focus is placed on whether these updates benefit players or prioritize profit.",
+      "role": "button",
+      "selector": "role=button[name=\"B-rad examines Clash Royale's updates over the past year, detailing monetization strategies. The video analyzes various in-game purchases and their impact on gameplay. A focus is placed on whether these updates benefit players or prioritize profit.\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "\ud83d\udd25\ud83d\udd25Looks and Voices are matching Rick Astley\ud83d\udd25\ud83d\udd25#Shorts by UnofficialVideo 7,126,009 views 2 years ago 42 seconds - play Short",
+      "role": "link",
+      "selector": "role=link[name=\"\ud83d\udd25\ud83d\udd25Looks and Voices are matching Rick Astley\ud83d\udd25\ud83d\udd25#Shorts by UnofficialVideo 7,126,009 views 2 years ago 42 seconds - play Short\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "AI creates code in seconds. Verifying it takes too long. Secure code with Sonar.",
+      "role": "link",
+      "selector": "role=link[name=\"AI creates code in seconds. Verifying it takes too long. Secure code with Sonar.\"]",
+      "semantic": [
+        "create"
+      ]
     }
   ]
 }
