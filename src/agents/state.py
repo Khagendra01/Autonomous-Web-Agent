@@ -26,11 +26,22 @@ class CapturedState(BaseModel):
     action_leading_here: Optional[str] = None
 
 
+class ActionLog(BaseModel):
+    """Rich log of what was attempted, what was done, and the result."""
+    model_config = ConfigDict(ser_json_timedelta='iso8601')
+    
+    step: int
+    intent: str  # What agent was trying to accomplish (from reasoning)
+    action: str  # What action was taken (e.g., "type 'test' in textbox")
+    result: str  # Success or error
+    
+    
 class AgentMemory(BaseModel):
     model_config = ConfigDict(ser_json_timedelta='iso8601')
     
     seen_fingerprints: List[str] = []
     states: List[CapturedState] = []
+    action_logs: List[ActionLog] = []  # Rich history of actions
 
 
 class AgentState(BaseModel):

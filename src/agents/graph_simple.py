@@ -59,6 +59,11 @@ def observe_node(state: AgentState) -> AgentState:
     if textbox_count > 0:
         print(f"  📝 Found {textbox_count} input field(s) - FORM STATE")
     
+    # Show action history count
+    if len(state.memory.action_logs) > 0:
+        last_log = state.memory.action_logs[-1]
+        print(f"  📜 Memory: {len(state.memory.action_logs)} actions (last: {last_log.action} → {last_log.result})")
+    
     return state
 
 
@@ -70,10 +75,25 @@ def plan_node(state: AgentState) -> AgentState:
 
 
 def act_node(state: AgentState) -> AgentState:
-    """Execute the planned action."""
+    """Execute the planned action and log what happened."""
     print(f"\n[ACT] Executing...")
     
     action = state.next_action or {'type': 'scroll', 'delta': 700}
+    
+    # Build human-readable action description
+    action_type = action.get('type', 'unknown')
+    if action_type == 'type':
+        action_desc = f"type '{action.get('text', '')}' in {action.get('selector', 'field')}"
+    elif action_type == 'click':
+        # Extract label from selector if possible
+        selector = action.get('selector', '')
+        if 'name="' in selector:
+            label = selector.split('name="')[1].split('"')[0]
+            action_desc = f"click '{label}'"
+        else:
+            action_desc = f"click {selector}"
+    else:
+        action_desc = f"scroll {action.get('delta', 0)}px"
     
     try:
         result = executor.act(action)
@@ -84,15 +104,38 @@ def act_node(state: AgentState) -> AgentState:
         # ⚡ Track action results for LLM feedback
         if result.get('ok'):
             state.last_action_result = "✓ Success"
+            result_str = "✓ Success"
             print(f"  ✓ Success")
         else:
             error_msg = result.get('error', 'Unknown error')
             state.last_action_result = f"✗ Failed: {error_msg}"
+            result_str = f"✗ Failed: {error_msg}"
             print(f"  ✗ Failed: {error_msg}")
+        
+        # 📝 Log to rich action history
+        from .state import ActionLog
+        log = ActionLog(
+            step=state.step_count,
+            intent=state.reasoning or "No reasoning provided",
+            action=action_desc,
+            result=result_str
+        )
+        state.memory.action_logs.append(log)
             
     except Exception as e:
         state.last_action_result = f"✗ Exception: {str(e)}"
+        result_str = f"✗ Exception: {str(e)}"
         print(f"  ✗ Error: {e}")
+        
+        # Log exception
+        from .state import ActionLog
+        log = ActionLog(
+            step=state.step_count,
+            intent=state.reasoning or "No reasoning provided",
+            action=action_desc,
+            result=result_str
+        )
+        state.memory.action_logs.append(log)
     
     return state
 

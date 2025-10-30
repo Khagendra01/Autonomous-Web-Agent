@@ -102,16 +102,24 @@ Respond in JSON: {{"app": "app_name", "url": "https://..."}}"""
         if len(interactables) > 100:
             elements_text += f"\n\n(+{len(interactables) - 100} more elements not shown)"
         
-        # Build context from last few actions
+        # Build rich context from action logs
         recent_context = ""
-        if len(state.action_history) >= 3:
-            recent_context = f"\nLast 3 actions: {', '.join(state.action_history[-3:])}"
-            # Check for loops
-            if state.action_history[-1] == state.action_history[-2] == state.action_history[-3]:
-                recent_context += "\n⚠️ You're repeating the same action - try something different!"
+        logs = state.memory.action_logs[-5:]  # Last 5 actions
         
-        if state.last_action_result:
-            recent_context += f"\nLast result: {state.last_action_result}"
+        if logs:
+            recent_context = "\n\nRECENT ACTIONS YOU TOOK:"
+            for log in logs:
+                recent_context += f"\n  Step {log.step}: {log.action} → {log.result}"
+                # Show intent only if different from action
+                if log.intent and log.intent != "No reasoning provided":
+                    intent_short = log.intent[:80] + "..." if len(log.intent) > 80 else log.intent
+                    recent_context += f"\n    Why: {intent_short}"
+            
+            # Check for loops
+            if len(logs) >= 3:
+                last_actions = [log.action for log in logs[-3:]]
+                if last_actions[0] == last_actions[1] == last_actions[2]:
+                    recent_context += "\n\n⚠️ You're repeating the same action - try something different!"
         
         # Minimal, clear prompt - let GPT-4o reason
         prompt = f"""You are automating: {state.goal}
@@ -127,14 +135,15 @@ Actions:
 - type: Type into a textbox (use exact selector + text from goal)
 - scroll: Scroll to see more (delta: pixels)
 
-Think about:
-1. What step of the workflow am I in? (navigation, form filling, submission)
-2. What elements are relevant to my goal?
-3. If textboxes exist, do I need to fill them before clicking submit?
+Think step-by-step:
+1. Review what I've already accomplished (check recent actions above)
+2. What's the next step in the workflow?
+3. If I filled form fields, should I now submit?
+4. If I keep repeating actions, am I stuck?
 
 Respond in JSON:
 {{
-  "reasoning": "analyze current state and plan",
+  "reasoning": "what I've done so far and what to do next",
   "action": {{"type": "click|type|scroll", "selector": "exact selector", "text": "if typing", "delta": 700}}
 }}"""
 
