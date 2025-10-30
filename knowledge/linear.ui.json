@@ -16,6 +16,15 @@
       "semantic": [
         "create"
       ]
+    },
+    {
+      "label": "Subscribe to changelog Bi-weekly email about new features and improvements",
+      "role": "checkbox",
+      "selector": "role=checkbox[name=\"Subscribe to changelog Bi-weekly email about new features and improvements\"]",
+      "semantic": [
+        "create",
+        "edit"
+      ]
     }
   ]
 }

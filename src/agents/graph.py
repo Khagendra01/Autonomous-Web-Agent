@@ -164,7 +164,10 @@ def build_graph() -> StateGraph:
 
 
 @app_cli.command()
-def run(goal: str):
+def run(
+    goal: str,
+    max_steps: int = typer.Option(50, help="Maximum number of steps the agent can take")
+):
     """Run the autonomous agent with LangGraph orchestration."""
     global executor, perceiver, planner, storage
     
@@ -200,6 +203,7 @@ def run(goal: str):
         cookies_path=cookies_path,
         dataset_dir=str(storage.root),
         working_dir=os.getcwd(),
+        max_steps=max_steps,
     )
     
     # Init browser
@@ -211,7 +215,13 @@ def run(goal: str):
     graph = build_graph()
     
     try:
-        final_state = graph.invoke(state)
+        # Calculate recursion limit based on workflow structure
+        # Each step involves 4 nodes: observe -> reason -> act -> validate
+        # So we need (max_steps * 4) + buffer for safety
+        recursion_limit = (state.max_steps * 4) + 10
+        print(f"[CONFIG] Max steps: {state.max_steps}, Recursion limit: {recursion_limit}\n")
+        
+        final_state = graph.invoke(state, {"recursion_limit": recursion_limit})
         
         # LangGraph returns dict when using Pydantic models
         if isinstance(final_state, dict):

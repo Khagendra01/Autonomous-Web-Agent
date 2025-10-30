@@ -73,6 +73,9 @@ python -m src.agents.graph run "create a project in linear named alpha"
 # Works with any web app or URL mentioned in the goal:
 python -m src.agents.graph run "create a repository on github named test-repo"
 python -m src.agents.graph run "send an email in gmail to test@example.com"
+
+# Optionally set custom max steps (default is 50):
+python -m src.agents.graph run "complex task" --max-steps 100
 ```
 
 ## Authentication
@@ -92,7 +95,8 @@ The agent uses **persistent Chrome profile** for authentication:
 
 ## Important Notes
 
-- Max steps: 50 (configurable in `state.py`)
+- Max steps: 50 (configurable via `--max-steps` CLI option)
+- Recursion limit: Automatically calculated as `(max_steps * 4) + 10`
 - LLM model: `gpt-4o` (in `planner.py`)
 - Driver port: 3999 (in `executor.py`)
 - Browser: Chrome with persistent profile
