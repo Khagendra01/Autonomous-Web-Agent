@@ -129,6 +129,126 @@
       "semantic": [
         "submit"
       ]
+    },
+    {
+      "label": "Create",
+      "role": "button",
+      "selector": "role=button[name=\"Create\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Find the Vampire 3M plays",
+      "role": "link",
+      "selector": "role=link[name=\"Find the Vampire 3M plays\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "MAN BINAKO DHAN | Official Trailer | Ashok Darji\u2019s Debut Film | Releasing on Kartik 21 \u092e\u0928 \u092c\u093f\u0928\u093e\u0915\u094b \u0927\u0928 3 minutes, 14 seconds",
+      "role": "link",
+      "selector": "role=link[name=\"MAN BINAKO DHAN | Official Trailer | Ashok Darji\u2019s Debut Film | Releasing on Kartik 21 \u092e\u0928 \u092c\u093f\u0928\u093e\u0915\u094b \u0927\u0928 3 minutes, 14 seconds\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "TANKA BUDATHOKI",
+      "role": "link",
+      "selector": "role=link[name=\"TANKA BUDATHOKI\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "Forbes Breaking News",
+      "role": "link",
+      "selector": "role=link[name=\"Forbes Breaking News\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "We Are Iowa Local 5 News",
+      "role": "link",
+      "selector": "role=link[name=\"We Are Iowa Local 5 News\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "WXII 12 News",
+      "role": "link",
+      "selector": "role=link[name=\"WXII 12 News\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Shinchanhindi S05E09 Shinchan New Episode 28-10-2023 - Episode 09 - Shinchan Cartoon 23 minutes",
+      "role": "link",
+      "selector": "role=link[name=\"Shinchanhindi S05E09 Shinchan New Episode 28-10-2023 - Episode 09 - Shinchan Cartoon 23 minutes\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Sub to \"CapNoCutEdits\" Never Gonna Give Up",
+      "role": "link",
+      "selector": "role=link[name=\"Sub to \"CapNoCutEdits\" Never Gonna Give Up\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Never gonna give you up- | #strangerthings #edit #viral",
+      "role": "link",
+      "selector": "role=link[name=\"Never gonna give you up- | #strangerthings #edit #viral\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Learn more This link opens in new tab",
+      "role": "link",
+      "selector": "role=link[name=\"Learn more This link opens in new tab\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "restorenj2025.com This link opens in new tab",
+      "role": "link",
+      "selector": "role=link[name=\"restorenj2025.com This link opens in new tab\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Restore New Jersey",
+      "role": "button",
+      "selector": "role=button[name=\"Restore New Jersey\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "\ud83d\udd25\ud83d\udd25Looks and Voices are matching Rick Astley\ud83d\udd25\ud83d\udd25#Shorts",
+      "role": "link",
+      "selector": "role=link[name=\"\ud83d\udd25\ud83d\udd25Looks and Voices are matching Rick Astley\ud83d\udd25\ud83d\udd25#Shorts\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "Rocket Man (Elton John)- Acoustic Cover (+Tutorial) 4 minutes, 21 seconds",
+      "role": "link",
+      "selector": "role=link[name=\"Rocket Man (Elton John)- Acoustic Cover (+Tutorial) 4 minutes, 21 seconds\"]",
+      "semantic": [
+        "create"
+      ]
     }
   ]
 }
