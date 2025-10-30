@@ -194,6 +194,30 @@
       "semantic": [
         "create"
       ]
+    },
+    {
+      "label": "Select project Choose icon beta No updates. Click to write update. No Priority Change project target date 0%",
+      "role": "link",
+      "selector": "role=link[name=\"Select project Choose icon beta No updates. Click to write update. No Priority Change project target date 0%\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "No updates. Click to write update.",
+      "role": "button",
+      "selector": "role=button[name=\"No updates. Click to write update.\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Add dependencies",
+      "role": "combobox",
+      "selector": "role=combobox[name=\"Add dependencies\"]",
+      "semantic": [
+        "create"
+      ]
     }
   ]
 }

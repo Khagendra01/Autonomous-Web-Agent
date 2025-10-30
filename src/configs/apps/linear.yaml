@@ -1,6 +1,0 @@
-startUrl: https://linear.app/
-modal:
-  selectors: ['[role="dialog"]', '.modal']
-loading:
-  idle: networkidle
-

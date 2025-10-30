@@ -1,8 +1,0 @@
-goal: Create a project in Linear named {{name}}
-inputs:
-  name: Alpha
-success:
-  any:
-    - stateLabel: entity_created_success
-    - listContains: "{{name}}"
-

@@ -1,0 +1,21 @@
+Metadata-Version: 2.4
+Name: autoui-agent
+Version: 0.1.0
+Summary: Local-first autonomous UI-state capture with Playwright + LangGraph
+Requires-Python: >=3.10
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: langchain>=0.3.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: pydantic>=2.8.0
+Requires-Dist: requests>=2.32.0
+Requires-Dist: pillow>=10.4.0
+Requires-Dist: ImageHash>=4.3
+Requires-Dist: rapidfuzz>=3.9.6
+Requires-Dist: typer>=0.12.5
+Requires-Dist: rich>=13.8.0
+Requires-Dist: pyyaml>=6.0.2
+Requires-Dist: networkx>=3.3
+Requires-Dist: matplotlib>=3.9.2
+Requires-Dist: playwright>=1.48.0
+Requires-Dist: flask>=3.0.3
+Requires-Dist: python-dotenv>=1.0.0
