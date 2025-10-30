@@ -63,15 +63,45 @@ class Perception:
         kb = UIKB(state.app)
         learns = []
         for i in obs.get('interactables', []):
-            lab = (i.get('label') or '').lower()
-            if 'create' in lab or lab.strip() == '+':
-                learns.append({'label': i.get('label'), 'role': i.get('role'), 'selector': i.get('selector'), 'semantic': ['create']})
+            lab = (i.get('label') or '').lower().strip()
+            semantics = []
+            
+            # Detect create/add actions
+            if any(word in lab for word in ['create', 'add', 'new', '+']) or lab == '+':
+                semantics.append('create')
+            
+            # Detect filter actions
             if 'filter' in lab:
-                learns.append({'label': i.get('label'), 'role': i.get('role'), 'selector': i.get('selector'), 'semantic': ['filter']})
-            if lab in {'create', 'save', 'done', 'submit'}:
-                learns.append({'label': i.get('label'), 'role': i.get('role'), 'selector': i.get('selector'), 'semantic': ['submit']})
+                semantics.append('filter')
+            
+            # Detect submit/save actions
+            if any(word in lab for word in ['save', 'submit', 'done', 'finish', 'confirm', 'ok']):
+                semantics.append('submit')
+            
+            # Detect delete/remove actions
+            if any(word in lab for word in ['delete', 'remove', 'trash', 'cancel']):
+                semantics.append('delete')
+            
+            # Detect edit actions
+            if any(word in lab for word in ['edit', 'update', 'modify', 'change']):
+                semantics.append('edit')
+            
+            # Detect search actions
+            if any(word in lab for word in ['search', 'find']):
+                semantics.append('search')
+            
+            # Only learn if we detected semantic meaning
+            if semantics:
+                learns.append({
+                    'label': i.get('label'),
+                    'role': i.get('role'),
+                    'selector': i.get('selector'),
+                    'semantic': semantics
+                })
+        
         if learns:
             kb.learn(learns)
+            print(f"  🧠 Learned {len(learns)} UI pattern(s)")
 
         return cap
 

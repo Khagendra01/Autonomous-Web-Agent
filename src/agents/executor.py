@@ -15,8 +15,8 @@ class Executor:
         r.raise_for_status()
         return r.json()
 
-    def init(self, app: str, cookies_path: str) -> Dict[str, Any]:
-        return self._post('/init', {'app': app, 'cookiesPath': cookies_path})
+    def init(self, url: str, app: str, cookies_path: str) -> Dict[str, Any]:
+        return self._post('/init', {'url': url, 'app': app, 'cookiesPath': cookies_path})
 
     def observe(self) -> Dict[str, Any]:
         return self._post('/observe', {})

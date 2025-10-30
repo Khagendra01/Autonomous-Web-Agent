@@ -44,11 +44,12 @@ chrome-user/       # Persistent Chrome profile for cookies
 
 The agent follows this LangGraph workflow:
 
-1. **Observe Node**: Capture DOM, accessibility tree, screenshot
-2. **Reason Node**: LLM analyzes state and plans next action
-3. **Act Node**: Execute action (click, type, scroll)
-4. **Validate Node**: Check if goal achieved
-5. **Loop**: Continue until done or max steps
+1. **Init Phase**: LLM extracts app name and URL from natural language goal
+2. **Observe Node**: Capture DOM, accessibility tree, screenshot
+3. **Reason Node**: LLM analyzes state and plans next action
+4. **Act Node**: Execute action (click, type, scroll)
+5. **Validate Node**: Check if goal achieved
+6. **Loop**: Continue until done or max steps
 
 ## Running the Agent
 
@@ -65,8 +66,13 @@ python -m src.drivers.playwright_driver
 
 **Terminal 2 (Agent):**
 ```bash
-# No need to set env vars manually - loaded from .env file
-python -m src.agents.graph run linear "create a project in linear named alpha"
+# LLM automatically extracts the app name and URL from the goal
+# Just provide the goal - no need to specify app name!
+python -m src.agents.graph run "create a project in linear named alpha"
+
+# Works with any web app or URL mentioned in the goal:
+python -m src.agents.graph run "create a repository on github named test-repo"
+python -m src.agents.graph run "send an email in gmail to test@example.com"
 ```
 
 ## Authentication

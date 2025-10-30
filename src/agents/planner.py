@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from .state import AgentState
+from .knowledge import UIKB
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 import os
@@ -20,12 +21,136 @@ class Planner:
             api_key=api_key,
             temperature=0.0,
         )
+    
+    def extract_app_and_url(self, goal: str) -> Dict[str, str]:
+        """Use LLM to extract the app name and starting URL from the goal."""
+        system_prompt = """You are helping to identify which web application and URL to use based on a user's goal.
+
+Analyze the goal and determine:
+1. The app name (short identifier like 'linear', 'notion', 'github', etc.)
+2. The starting URL to navigate to
+
+Common apps and their URLs:
+- Linear: https://linear.app/
+- Notion: https://www.notion.so/
+- GitHub: https://github.com/
+- Gmail: https://mail.google.com/
+- Jira: https://jira.atlassian.com/
+- Trello: https://trello.com/
+- Slack: https://slack.com/
+
+If the goal mentions a specific URL, use that. Otherwise, infer the most appropriate URL.
+
+Respond in JSON format:
+{
+  "app": "app_name",
+  "url": "https://...",
+  "reasoning": "Why you chose this app and URL"
+}"""
+
+        user_prompt = f"""Goal: {goal}
+
+What app and URL should be used for this goal?"""
+
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+        
+        try:
+            response = self.llm.invoke(messages)
+            content = response.content
+            
+            if isinstance(content, str):
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    content = content.split("```")[1].split("```")[0].strip()
+                result = json.loads(content)
+            else:
+                result = content
+            
+            print(f"[LLM] Extracted app: {result.get('app')}, URL: {result.get('url')}")
+            print(f"[LLM] Reasoning: {result.get('reasoning')}")
+            
+            return {
+                'app': result.get('app', 'unknown'),
+                'url': result.get('url', 'https://www.google.com'),
+                'reasoning': result.get('reasoning', '')
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to extract app/URL from goal: {e}")
+            # Fallback to google if extraction fails
+            return {
+                'app': 'unknown',
+                'url': 'https://www.google.com',
+                'reasoning': f'Error: {e}'
+            }
 
     def reason_and_plan(self, state: AgentState) -> AgentState:
         """Use LLM to reason about current state and plan next action."""
         obs = state.observation or {}
         interactables = obs.get('interactables', [])
         errors = obs.get('errors', [])
+        
+        # Query knowledge base for relevant UI elements
+        kb = UIKB(state.app)
+        goal_lower = state.goal.lower()
+        relevant_knowledge = []
+        seen_items = set()  # Track to avoid duplicates
+        
+        # Search for relevant semantic actions based on goal keywords
+        if any(word in goal_lower for word in ['create', 'add', 'new']):
+            for item in kb.query('create'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        if 'filter' in goal_lower:
+            for item in kb.query('filter'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        if any(word in goal_lower for word in ['save', 'submit', 'done', 'finish']):
+            for item in kb.query('submit'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        if any(word in goal_lower for word in ['delete', 'remove']):
+            for item in kb.query('delete'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        if any(word in goal_lower for word in ['edit', 'update', 'modify']):
+            for item in kb.query('edit'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        if any(word in goal_lower for word in ['search', 'find']):
+            for item in kb.query('search'):
+                key = (item.get('role'), item.get('label'))
+                if key not in seen_items:
+                    relevant_knowledge.append(item)
+                    seen_items.add(key)
+        
+        # Format knowledge hints
+        knowledge_hints = ""
+        if relevant_knowledge:
+            knowledge_hints = "\n\nKnown helpful UI elements from past interactions:\n"
+            knowledge_hints += "\n".join([
+                f"- {item.get('label')} ({item.get('role')}) - semantic: {', '.join(item.get('semantic', []))}"
+                for item in relevant_knowledge[:5]
+            ])
         
         # Format interactables for LLM
         interactables_text = "\n".join([
@@ -75,6 +200,7 @@ Recent actions: {', '.join(state.action_history[-5:]) if state.action_history el
 
 ERROR MESSAGES on page:
 {errors_text}
+{knowledge_hints}
 
 Available interactive elements on the page:
 {interactables_text if interactables_text else "No clear interactive elements found"}

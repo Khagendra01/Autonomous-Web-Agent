@@ -54,7 +54,17 @@ def reason_node(state: AgentState) -> AgentState:
     # Show what the LLM is seeing
     errors = state.observation.get('errors', [])
     if errors:
-        print(f"  📋 LLM will see {len(errors)} error(s)")
+        print(f"  ⚠️  LLM will see {len(errors)} error(s)")
+    
+    # Check if we have relevant knowledge
+    from .knowledge import UIKB
+    kb = UIKB(state.app)
+    goal_lower = state.goal.lower()
+    relevant_knowledge = []
+    if any(word in goal_lower for word in ['create', 'add', 'new']):
+        relevant_knowledge.extend(kb.query('create'))
+    if relevant_knowledge:
+        print(f"  💡 Using {len(relevant_knowledge)} learned UI pattern(s)")
     
     state = planner.reason_and_plan(state)
     
@@ -154,15 +164,25 @@ def build_graph() -> StateGraph:
 
 
 @app_cli.command()
-def run(app: str, goal: str):
+def run(goal: str):
     """Run the autonomous agent with LangGraph orchestration."""
     global executor, perceiver, planner, storage
     
     print(f"\n{'='*60}")
     print(f"Starting Autonomous Web Agent")
-    print(f"App: {app}")
     print(f"Goal: {goal}")
     print(f"{'='*60}\n")
+    
+    # Initialize planner first to extract app and URL from goal
+    planner = Planner()
+    
+    print("[INIT] Extracting app and URL from goal using LLM...")
+    app_info = planner.extract_app_and_url(goal)
+    app = app_info['app']
+    start_url = app_info['url']
+    
+    print(f"  ✓ App: {app}")
+    print(f"  ✓ URL: {start_url}\n")
     
     # Setup
     task_slug = goal.lower().replace(' ', '_').replace('/', '-')[:60]
@@ -172,7 +192,6 @@ def run(app: str, goal: str):
     # Initialize components
     executor = Executor()
     perceiver = Perception()
-    planner = Planner()
     
     # Initialize state
     state = AgentState(
@@ -185,7 +204,7 @@ def run(app: str, goal: str):
     
     # Init browser
     print("[INIT] Starting browser...")
-    _ = executor.init(app, state.cookies_path)
+    _ = executor.init(start_url, app, state.cookies_path)
     print("  ✓ Browser ready\n")
     
     # Build and run LangGraph

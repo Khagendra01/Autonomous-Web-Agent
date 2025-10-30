@@ -37,9 +37,16 @@ def init_route():
     global _pw, _browser, _context, _page
     data = request.get_json(force=True)
     app_name = data.get('app')
+    start_url = data.get('url')
     cookies_path = data.get('cookiesPath')
+    
+    print(f"[DEBUG] App: {app_name}")
+    print(f"[DEBUG] URL: {start_url}")
     print(f"[DEBUG] Received cookiesPath: {cookies_path}")
     print(f"[DEBUG] File exists: {os.path.exists(cookies_path) if cookies_path else 'N/A'}")
+    
+    if not start_url:
+        return jsonify({'ok': False, 'error': 'URL is required'}), 400
     
     if _pw is None:
         _pw = sync_playwright().start()
@@ -61,7 +68,6 @@ def init_route():
         ],
     )
     _page = _context.new_page()
-    start_url = 'https://linear.app/' if app_name == 'linear' else 'https://www.notion.so/'
     
     print(f"[DEBUG] Navigating to {start_url}...")
     _page.goto(start_url, wait_until='load')
