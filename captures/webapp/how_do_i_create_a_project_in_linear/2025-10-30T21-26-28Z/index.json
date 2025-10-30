@@ -1,0 +1,61 @@
+{
+  "app": "webapp",
+  "task": "how_do_i_create_a_project_in_linear",
+  "timestamp": "2025-10-30T21-26-28Z",
+  "states": [
+    {
+      "step": 0,
+      "screenshot": "step_000.png",
+      "url": null,
+      "action": {
+        "type": "click",
+        "selector": "role=button[name=\"Projects\"]",
+        "label": "Projects",
+        "score": 9.0,
+        "reasoning": "Clicking on the 'Projects' button is likely to lead directly to the section where a new project can be created, aligning well with the goal of creating a project."
+      }
+    },
+    {
+      "step": 1,
+      "screenshot": "step_001.png",
+      "url": null,
+      "action": {
+        "type": "click",
+        "selector": "role=button[name=\"Add project\"]",
+        "label": "Add project",
+        "score": 10.0,
+        "reasoning": "The 'Add project' button is likely to directly open the project creation flow, which aligns perfectly with the goal of creating a project. This action has the highest score and directly advances the goal."
+      }
+    },
+    {
+      "step": 2,
+      "screenshot": "step_002.png",
+      "url": null,
+      "action": {
+        "type": "type",
+        "selector": "role=textbox[name=\"Project name\"]",
+        "label": "Project name",
+        "score": 10.0,
+        "reasoning": "Entering the project name is essential for creating a new project. It is a required step before finalizing the project creation with the 'Create project' button."
+      }
+    },
+    {
+      "step": 3,
+      "screenshot": "step_003.png",
+      "url": null,
+      "action": {
+        "type": "click",
+        "selector": "role=button[name=\"Create project\"]",
+        "label": "Create project",
+        "score": 10.0,
+        "reasoning": "The 'Create project' button directly completes the project creation process, which is the primary goal. Since the project name has already been entered, this action will finalize the creation of the project."
+      }
+    },
+    {
+      "step": 4,
+      "screenshot": "step_004.png",
+      "url": "https://linear.app/alpha-20231005/projects/all",
+      "action": null
+    }
+  ]
+}

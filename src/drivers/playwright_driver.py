@@ -108,6 +108,58 @@ def _robust_click(page: Page, selector: str) -> None:
 		raise
 
 
+
+def _robust_type(page: Page, selector: str, text: str) -> None:
+	loc = page.locator(selector).first
+	loc.wait_for(state='visible', timeout=5000)
+	# Try direct fill first
+	try:
+		loc.fill(str(text))
+		page.wait_for_timeout(200)
+		return
+	except Exception:
+		pass
+
+	# Click to focus/expand (e.g., YouTube comment box)
+	try:
+		loc.click(timeout=1500)
+		page.wait_for_timeout(150)
+	except Exception:
+		try:
+			_robust_click(page, selector)
+			page.wait_for_timeout(150)
+		except Exception:
+			pass
+
+	# Prefer a visible contenteditable textbox (YouTube uses this)
+	editable = page.locator('[contenteditable="true"][role="textbox"]').first
+	if editable.count() == 0:
+		editable = page.locator('#contenteditable-root[contenteditable="true"]').first
+
+	if editable.count() > 0:
+		editable.wait_for(state='visible', timeout=3000)
+		try:
+			editable.fill(str(text))
+			page.wait_for_timeout(200)
+			return
+		except Exception:
+			editable.click(timeout=1000)
+			page.keyboard.type(str(text))
+			page.wait_for_timeout(200)
+			return
+
+	# Last resort: type after focusing original
+	try:
+		loc.click(timeout=1000)
+		page.keyboard.type(str(text))
+		page.wait_for_timeout(200)
+		return
+	except Exception:
+		pass
+
+	raise RuntimeError("Failed to type into target or any discovered editor")
+
+
 @app.post('/init')
 def init_route():
 	global _pw, _browser, _context, _page
@@ -337,10 +389,7 @@ def act_route():
 			_page.mouse.wheel(0, delta)
 			_page.wait_for_timeout(200)
 		elif t == 'type' and data.get('selector') and data.get('text') is not None:
-			locator = _page.locator(data['selector'])
-			locator.wait_for(state='visible', timeout=5000)
-			locator.fill(str(data['text']))
-			_page.wait_for_timeout(200)
+			_robust_type(_page, data['selector'], str(data['text']))
 		return jsonify({ 'ok': True })
 	except Exception as e:
 		print(f"[ACT ERROR] Type: {data.get('type')}, Selector: {data.get('selector')}, Error: {str(e)}")
