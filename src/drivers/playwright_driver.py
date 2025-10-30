@@ -196,17 +196,23 @@ def act_route():
     try:
         t = data.get('type')
         if t == 'click' and data.get('selector'):
-            _page.locator(data['selector']).first.click()
+            # Wait for element to be visible and stable before clicking
+            locator = _page.locator(data['selector']).first
+            locator.wait_for(state='visible', timeout=5000)
+            locator.click(timeout=10000)
             _page.wait_for_timeout(400)
         elif t == 'scroll':
             delta = data.get('delta', 600)
             _page.mouse.wheel(0, delta)
             _page.wait_for_timeout(200)
         elif t == 'type' and data.get('selector') and data.get('text') is not None:
-            _page.locator(data['selector']).fill(str(data['text']))
+            locator = _page.locator(data['selector'])
+            locator.wait_for(state='visible', timeout=5000)
+            locator.fill(str(data['text']))
             _page.wait_for_timeout(200)
         return jsonify({ 'ok': True })
     except Exception as e:
+        print(f"[ACT ERROR] Type: {data.get('type')}, Selector: {data.get('selector')}, Error: {str(e)}")
         return jsonify({ 'ok': False, 'error': str(e) }), 500
 
 

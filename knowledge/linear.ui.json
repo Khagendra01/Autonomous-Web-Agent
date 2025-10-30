@@ -218,6 +218,78 @@
       "semantic": [
         "create"
       ]
+    },
+    {
+      "label": "Write project update",
+      "role": "button",
+      "selector": "role=button[name=\"Write project update\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Updates",
+      "role": "link",
+      "selector": "role=link[name=\"Updates\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Add document or link\u2026",
+      "role": "button",
+      "selector": "role=button[name=\"Add document or link\u2026\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Write first project update",
+      "role": "button",
+      "selector": "role=button[name=\"Write first project update\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "Add dependency",
+      "role": "button",
+      "selector": "role=button[name=\"Add dependency\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add lead",
+      "role": "button",
+      "selector": "role=button[name=\"Add lead\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add members",
+      "role": "button",
+      "selector": "role=button[name=\"Add members\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add labels",
+      "role": "button",
+      "selector": "role=button[name=\"Add labels\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add milestone",
+      "role": "button",
+      "selector": "role=button[name=\"Add milestone\"]",
+      "semantic": [
+        "create"
+      ]
     }
   ]
 }

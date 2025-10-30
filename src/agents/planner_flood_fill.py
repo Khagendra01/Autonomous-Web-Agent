@@ -42,6 +42,10 @@ class FloodFillPlanner:
             print(f"[FLOOD FILL] Loaded existing graph with {len(self.graph.states)} states")
         
         self.graph_dir = graph_dir
+        
+        # Track recent state history for loop detection
+        self.state_history = []
+        self.max_history = 10
     
     def extract_app_and_url(self, goal: str) -> Dict[str, str]:
         """Extract app name and URL from goal."""
@@ -99,7 +103,9 @@ Respond in JSON: {{"app": "app_name", "url": "https://..."}}"""
             selector = last_action_data.get('selector')
             text = last_action_data.get('text')
             
-            success = '✓' in (state.last_action_result or '')
+            # Consider success only if the UI state actually changed
+            success_symbol = '✓' in (state.last_action_result or '')
+            success = success_symbol and (fingerprint != state.last_fingerprint)
             
             self.graph.add_transition(
                 from_fingerprint=state.last_fingerprint,
@@ -234,6 +240,35 @@ Respond in JSON:
             lines.append(f"  Step {log.step}: {log.action} → {log.result}")
         return "\n".join(lines)
     
+    def _detect_oscillation(self, current_fingerprint: str) -> bool:
+        """Detect if we're stuck in a loop between states."""
+        # Add current state to history
+        self.state_history.append(current_fingerprint)
+        
+        # Keep only recent history
+        if len(self.state_history) > self.max_history:
+            self.state_history.pop(0)
+        
+        # Need at least 4 states to detect A->B->A->B pattern
+        if len(self.state_history) < 4:
+            return False
+        
+        # Check for oscillation: last 4 states alternate between 2 values
+        recent = self.state_history[-4:]
+        if recent[0] == recent[2] and recent[1] == recent[3] and recent[0] != recent[1]:
+            return True
+        
+        # Check for 3-state loop: A->B->C->A->B->C
+        if len(self.state_history) >= 6:
+            recent_6 = self.state_history[-6:]
+            if (recent_6[0] == recent_6[3] and 
+                recent_6[1] == recent_6[4] and 
+                recent_6[2] == recent_6[5] and
+                len(set(recent_6[:3])) == 3):
+                return True
+        
+        return False
+    
     def plan_next_action(self, state: AgentState) -> AgentState:
         """
         Plan next action using Flood Fill strategy:
@@ -250,57 +285,114 @@ Respond in JSON:
         print(f"[FLOOD FILL] State: {current_ui_state.fingerprint[:12]}... "
               f"(visited {current_ui_state.visited_count}x, distance={current_ui_state.distance_to_goal:.1f})")
         
-        # Strategy 1: If we have known transitions, use best one (EXPLOIT)
-        best_known_action = current_ui_state.get_best_action(self.graph)
+        # Check for oscillation (stuck in loop)
+        is_oscillating = self._detect_oscillation(current_ui_state.fingerprint)
+        if is_oscillating:
+            print(f"[LOOP DETECTED] ⚠️ Oscillating between states - deferring to LLM with full context")
         
-        if best_known_action and best_known_action[1].success_rate > 0.5:
-            action_key, transition = best_known_action
-            
-            print(f"[STRATEGY] EXPLOIT known path (success rate: {transition.success_rate:.0%})")
-            
-            state.reasoning = f"Following known good path: {action_key}"
-            state.next_action = {
-                'type': transition.action_type,
-                'selector': transition.action_selector,
-                'text': transition.action_text,
-                'delta': 700
-            }
-            
-            print(f"[PLAN] {state.reasoning}")
-            print(f"[ACTION] {state.next_action}")
-            
-            return state
-        
-        # Strategy 2: Explore new actions (EXPLORE)
-        print(f"[STRATEGY] EXPLORE new actions")
-        
-        # Get unexplored actions
-        available_actions = [
-            {
+        # Always delegate action ranking and choice to LLM with full context
+        print(f"[STRATEGY] LLM-DRIVEN decision")
+        # Gather unique actions by selector
+        seen = set()
+        available_actions = []
+        for item in interactables:
+            sel = item.get('selector')
+            if not sel or sel in seen:
+                continue
+            seen.add(sel)
+            available_actions.append({
                 'role': item.get('role'),
                 'label': item.get('label'),
-                'selector': item.get('selector')
-            }
-            for item in interactables
-        ]
-        
-        unexplored = self.graph.get_unexplored_actions(current_ui_state, available_actions)
-        
-        if unexplored:
-            print(f"[EXPLORE] Found {len(unexplored)} unexplored actions")
-            
-            # Use LLM to pick best unexplored action (pure reasoning, no rules)
-            state = self._llm_explore(state, unexplored)
-        else:
-            # All actions explored, scroll or retry
-            print(f"[EXPLORE] All actions tried, scrolling...")
-            state.reasoning = "All actions explored, scrolling to find more"
-            state.next_action = {'type': 'scroll', 'delta': 700}
+                'selector': sel,
+            })
+        state = self._llm_decide_action(state, current_ui_state, available_actions, is_oscillating)
         
         print(f"[PLAN] {state.reasoning}")
         print(f"[ACTION] {state.next_action}")
         
         return state
+    
+    def _llm_decide_action(self, state: AgentState, current_ui_state: 'UIState', available_actions: List[Dict], oscillating: bool) -> AgentState:
+        """Single LLM-driven action ranking and selection with transparent context."""
+        # Build stats for actions from known transitions
+        attempt_counts: Dict[str, int] = {}
+        success_rates: Dict[str, float] = {}
+        neighbor_distances: Dict[str, Optional[float]] = {}
+        for t in current_ui_state.transitions.values():
+            sel = t.action_selector
+            if not sel:
+                continue
+            attempt_counts[sel] = t.success_count + t.failure_count
+            success_rates[sel] = t.success_rate
+            neighbor = self.graph.states.get(t.to_state)
+            neighbor_distances[sel] = neighbor.distance_to_goal if neighbor else None
+
+        # Format candidates
+        lines = []
+        for a in available_actions[:80]:
+            sel = a.get('selector','')
+            cnt = attempt_counts.get(sel, 0)
+            sr = success_rates.get(sel, None)
+            dist = neighbor_distances.get(sel, None)
+            sr_str = f"{sr:.2f}" if sr is not None else "unknown"
+            dist_str = f"{dist:.2f}" if dist is not None and dist != float('inf') else "unknown"
+            lines.append(f"- {a.get('role','unknown').upper()} | label=\"{a.get('label','no label')}\" | selector={sel} | attempts={cnt} | success_rate={sr_str} | leads_to_distance={dist_str}")
+
+        context_osc = "true" if oscillating else "false"
+        prompt = f"""You are controlling a browser to achieve this goal: {state.goal}
+
+Current page: {state.current_url}
+Steps so far: {state.step_count}
+Oscillation detected: {context_osc}
+Recent actions: {', '.join(state.action_history[-5:]) if state.action_history else 'None'}
+
+AVAILABLE ACTIONS (with historical stats):
+{os.linesep.join(lines)}
+
+Guidance:
+- Choose the single best next action that makes concrete progress toward the goal.
+- Prefer actions with better success-rate and lower neighbor distance when known.
+- Avoid repeating the same selector many times unless there is new evidence.
+- If a form needs to be filled, propose a type action with selector and text derived from the goal.
+- If no good action is visible, propose a scroll.
+
+Respond in JSON only:
+{{
+  "reasoning": "brief rationale",
+  "action": {{"type": "click|type|scroll", "selector": "exact selector", "text": "optional if type"}}
+}}"""
+
+        try:
+            response = self.llm.invoke([HumanMessage(content=prompt)])
+            content = response.content
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            result = json.loads(content)
+            state.reasoning = result.get('reasoning', 'LLM decision')
+            action = result.get('action') or {}
+            if not isinstance(action, dict) or 'type' not in action:
+                state.next_action = {'type': 'scroll', 'delta': 700}
+            else:
+                state.next_action = action
+        except Exception as e:
+            print(f"[ERROR] LLM decision failed: {e}")
+            # Fallback: scroll
+            state.reasoning = "LLM decision failed, scrolling"
+            state.next_action = {'type': 'scroll', 'delta': 700}
+
+        return state
+    
+    def _format_actions_for_llm(self, actions: List[Dict]) -> str:
+        """Format actions list for LLM prompt."""
+        lines = []
+        for i, act in enumerate(actions, 1):
+            role = act.get('role', 'unknown')
+            label = act.get('label', 'no label')
+            selector = act.get('selector', 'no selector')
+            lines.append(f"  [{i}] {role.upper()}: \"{label}\" → {selector}")
+        return "\n".join(lines)
     
     def _llm_explore(self, state: AgentState, unexplored_actions: List[Dict]) -> AgentState:
         """Use LLM to choose best action from unexplored options - pure reasoning, no rules."""

@@ -194,6 +194,14 @@ class StateGraph(BaseModel):
             if transition.action_selector:
                 tried_selectors.add(transition.action_selector)
         
+        # If state has been visited many times, also consider failed transitions
+        # to avoid retrying actions that consistently don't help
+        if current_state.visited_count > 3:
+            for transition in current_state.transitions.values():
+                # Mark transitions with low success rate as "tried" to deprioritize them
+                if transition.success_rate < 0.3 and transition.action_selector:
+                    tried_selectors.add(transition.action_selector)
+        
         unexplored = []
         for action in available_actions:
             selector = action.get('selector', '')
