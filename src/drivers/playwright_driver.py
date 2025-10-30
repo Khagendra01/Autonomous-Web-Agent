@@ -1,6 +1,7 @@
 from __future__ import annotations
 from flask import Flask, request, jsonify, Response
 from playwright.sync_api import sync_playwright, Page, BrowserContext
+import re
 import json
 import os
 
@@ -58,54 +59,155 @@ def _dismiss_overlays(page: Page) -> None:
 
 
 def _robust_click(page: Page, selector: str) -> None:
-	"""Attempt a robust click with fallbacks if intercepted by overlays."""
-	locator = page.locator(selector).first
-	locator.wait_for(state='visible', timeout=5000)
-	try:
-		locator.click(timeout=10000)
-		page.wait_for_timeout(200)
-		return
-	except Exception as e:
-		message = str(e)
-		# If pointer events are intercepted or similar, try fallbacks
-		if 'intercepts pointer events' in message or 'element receives pointer-events' in message or 'Timeout' in message:
-			# 1) Dismiss overlays and retry normal click
-			_dismiss_overlays(page)
-			try:
-				locator.click(timeout=3000)
-				page.wait_for_timeout(150)
-				return
-			except Exception:
-				pass
-			# 2) Force click (may bypass hit testing)
-			try:
-				locator.click(force=True, timeout=2000)
-				page.wait_for_timeout(150)
-				return
-			except Exception:
-				pass
-			# 3) JS click
-			try:
-				page.evaluate("el => el.click()", locator.element_handle(timeout=2000))
-				page.wait_for_timeout(150)
-				return
-			except Exception:
-				pass
-			# 4) Click center of bounding box with the mouse
-			try:
-				box = locator.bounding_box(timeout=2000)
-				if box:
-					x = box['x'] + box['width'] / 2
-					y = box['y'] + box['height'] / 2
-					page.mouse.move(x, y)
-					page.mouse.down()
-					page.mouse.up()
-					page.wait_for_timeout(150)
-					return
-			except Exception:
-				pass
-		# Re-raise original error if all fallbacks failed
-		raise
+    """Attempt a robust click with fallbacks if intercepted by overlays.
+
+    Special handling: when targeting ARIA option/menuitem entries, ensure the
+    parent popup/listbox is open, then match by case-insensitive text.
+    """
+    # Special path for ARIA option/menuitem clicks generated like: role=option[name="..."]
+    if selector.startswith('role=option[name="') or selector.startswith('role=menuitem[name="'):
+        # Extract the desired label
+        m = re.match(r'^role=(option|menuitem)\[name="(.+?)"\]$', selector)
+        desired_label = m.group(2) if m else ''
+
+        # Ensure a popup container is visible; try to open if needed
+        try:
+            container = page.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first
+            if container.count() == 0 or not container.is_visible():
+                # Try to open an active combobox if present
+                try:
+                    combo = page.locator('[role="combobox"]').filter(has=page.locator('[aria-expanded="false"]')).first
+                    if combo and (combo.count() > 0):
+                        combo.click(timeout=800)
+                except Exception:
+                    pass
+                # Try common keyboard openers
+                try:
+                    page.keyboard.press('Alt+ArrowDown')
+                except Exception:
+                    pass
+                page.wait_for_timeout(200)
+            # Wait for any container to be visible
+            page.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first.wait_for(state='visible', timeout=8000)
+        except Exception:
+            pass
+
+        # Attempt exact, then partial, then regex case-insensitive matches
+        candidates = [
+            page.get_by_role('option', name=desired_label).first,
+            page.get_by_role('menuitem', name=desired_label).first,
+            page.locator('[role="option"]', has_text=desired_label).first,
+            page.locator('[role="menuitem"]', has_text=desired_label).first,
+        ]
+        try:
+            regex = re.compile(re.escape(desired_label), re.IGNORECASE)
+            candidates.extend([
+                page.locator('[role="option"]').filter(has_text=regex).first,
+                page.locator('[role="menuitem"]').filter(has_text=regex).first,
+            ])
+        except Exception:
+            pass
+
+        # If nothing visible, try typing to filter in focused textbox/combobox
+        clicked = False
+        for cand in candidates:
+            try:
+                if cand and cand.count() > 0:
+                    try:
+                        cand.scroll_into_view_if_needed(timeout=1000)
+                    except Exception:
+                        pass
+                    cand.wait_for(state='visible', timeout=8000)
+                    cand.click(timeout=5000)
+                    page.wait_for_timeout(200)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+
+        if not clicked and desired_label:
+            # Try to filter options by typing the desired label
+            try:
+                active = page.locator('[role="combobox"][aria-expanded="true"], input[role="combobox"], input[aria-autocomplete]')
+                el = active.first if active.count() > 0 else None
+                if el:
+                    try:
+                        el.fill(desired_label)
+                    except Exception:
+                        el.click(timeout=800)
+                        page.keyboard.type(desired_label)
+                    page.wait_for_timeout(300)
+                    # Retry selecting the first matching option
+                    opt = page.locator('[role="option"]').filter(has_text=re.compile(re.escape(desired_label), re.IGNORECASE)).first
+                    opt.wait_for(state='visible', timeout=5000)
+                    opt.click(timeout=3000)
+                    page.wait_for_timeout(200)
+                    clicked = True
+            except Exception:
+                pass
+
+        if clicked:
+            # Wait briefly for UI state to reflect the selection (e.g., assignee label updates)
+            try:
+                pattern = re.compile(re.escape(desired_label), re.IGNORECASE) if desired_label else None
+                if pattern:
+                    page.locator('[role="button"], [aria-label], [role], button, a, span, div, input').filter(has_text=pattern).first.wait_for(state='visible', timeout=2000)
+            except Exception:
+                pass
+            return
+        # Fall through to generic path if above failed
+
+    locator = page.locator(selector).first
+    locator.wait_for(state='visible', timeout=10000)
+    try:
+        try:
+            locator.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+        locator.click(timeout=12000)
+        page.wait_for_timeout(200)
+        return
+    except Exception as e:
+        message = str(e)
+        # If pointer events are intercepted or similar, try fallbacks
+        if 'intercepts pointer events' in message or 'element receives pointer-events' in message or 'Timeout' in message:
+            # 1) Dismiss overlays and retry normal click
+            _dismiss_overlays(page)
+            try:
+                locator.click(timeout=3000)
+                page.wait_for_timeout(150)
+                return
+            except Exception:
+                pass
+            # 2) Force click (may bypass hit testing)
+            try:
+                locator.click(force=True, timeout=2000)
+                page.wait_for_timeout(150)
+                return
+            except Exception:
+                pass
+            # 3) JS click
+            try:
+                page.evaluate("el => el.click()", locator.element_handle(timeout=2000))
+                page.wait_for_timeout(150)
+                return
+            except Exception:
+                pass
+            # 4) Click center of bounding box with the mouse
+            try:
+                box = locator.bounding_box(timeout=2000)
+                if box:
+                    x = box['x'] + box['width'] / 2
+                    y = box['y'] + box['height'] / 2
+                    page.mouse.move(x, y)
+                    page.mouse.down()
+                    page.mouse.up()
+                    page.wait_for_timeout(150)
+                    return
+            except Exception:
+                pass
+        # Re-raise original error if all fallbacks failed
+        raise
 
 
 
@@ -436,6 +538,54 @@ def act_route():
 			_page.wait_for_timeout(200)
 		elif t == 'type' and data.get('selector') and data.get('text') is not None:
 			_robust_type(_page, data['selector'], str(data['text']))
+			# Special handling for UberEats address entry: select first autocomplete option, then search
+			try:
+				selector_str = str(data.get('selector') or '')
+				if 'Enter delivery address' in selector_str:
+					selected = False
+					# Try clicking the first suggestion from the listbox
+					try:
+						lb = _page.locator('[role="listbox"]').first
+						lb.wait_for(state='visible', timeout=8000)
+						opt = _page.locator('[role="option"]').first
+						opt.wait_for(state='visible', timeout=4000)
+						opt.click(timeout=5000)
+						_page.wait_for_load_state('networkidle', timeout=15000)
+						selected = True
+					except Exception:
+						pass
+					# Fallback: ArrowDown + Enter to select first suggestion
+					if not selected:
+						try:
+							_page.keyboard.press('ArrowDown')
+							_page.wait_for_timeout(200)
+							_page.keyboard.press('Enter')
+							_page.wait_for_load_state('networkidle', timeout=15000)
+							selected = True
+						except Exception:
+							pass
+					# Best-effort: find a search box and query for chicken wings
+					try:
+						try:
+							search = _page.get_by_role('searchbox')
+						except Exception:
+							search = None
+						if not search or (hasattr(search, 'count') and search.count() == 0):
+							search = _page.locator('input[placeholder*="Search" i], input[type="search"]').first
+						if hasattr(search, 'count') and search.count() == 0:
+							raise Exception('No visible search box')
+						search.wait_for(state='visible', timeout=6000)
+						try:
+							search.fill('chicken wings')
+						except Exception:
+							search.click(timeout=1500)
+							_page.keyboard.type('chicken wings')
+						_page.keyboard.press('Enter')
+						_page.wait_for_load_state('networkidle', timeout=15000)
+					except Exception:
+						pass
+			except Exception:
+				pass
 		return jsonify({ 'ok': True })
 	except Exception as e:
 		print(f"[ACT ERROR] Type: {data.get('type')}, Selector: {data.get('selector')}, Error: {str(e)}")
