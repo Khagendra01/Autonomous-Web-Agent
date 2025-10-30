@@ -140,11 +140,69 @@ What app and URL should be used for this goal?"""
         
         return score
     
+    def _analyze_ui_context(self, interactables: list, goal: str) -> dict:
+        """Analyze the UI to understand what kind of state we're in."""
+        context = {
+            'has_inputs': False,
+            'input_fields': [],
+            'has_submit_buttons': False,
+            'submit_buttons': [],
+            'is_form_state': False,
+            'unfilled_inputs': []
+        }
+        
+        goal_lower = goal.lower()
+        
+        # Check for input fields
+        for item in interactables:
+            role = item.get('role', '')
+            label = item.get('label', '').lower()
+            
+            if role in ['textbox', 'searchbox', 'input']:
+                context['has_inputs'] = True
+                context['input_fields'].append(item)
+                
+                # Check if this input is relevant to the goal
+                # Extract what should be typed (e.g., "named beta" -> "beta")
+                if 'named' in goal_lower or 'called' in goal_lower or 'name' in label:
+                    context['unfilled_inputs'].append({
+                        'field': item,
+                        'suggested_value': self._extract_value_from_goal(goal, ['named', 'called', 'name']),
+                        'priority': 'high'
+                    })
+            
+            # Check for submit/create buttons
+            if role == 'button' and any(word in label for word in ['submit', 'create', 'save', 'add', 'done', 'confirm']):
+                context['has_submit_buttons'] = True
+                context['submit_buttons'].append(item)
+        
+        # Determine if we're in a form state
+        context['is_form_state'] = context['has_inputs'] and context['has_submit_buttons']
+        
+        return context
+    
+    def _extract_value_from_goal(self, goal: str, keywords: list) -> str:
+        """Extract the value to enter from the goal."""
+        goal_lower = goal.lower()
+        for keyword in keywords:
+            if keyword in goal_lower:
+                # Extract the word after the keyword
+                parts = goal_lower.split(keyword)
+                if len(parts) > 1:
+                    after_keyword = parts[1].strip()
+                    # Get the first word/phrase
+                    value = after_keyword.split()[0] if after_keyword.split() else ''
+                    return value.strip('"\',.!?')
+        return ''
+    
     def reason_and_plan(self, state: AgentState) -> AgentState:
         """Use LLM to reason about current state and plan next action."""
         obs = state.observation or {}
         interactables = obs.get('interactables', [])
         errors = obs.get('errors', [])
+        
+        # Analyze UI context
+        ui_context = self._analyze_ui_context(interactables, state.goal)
         
         # Query knowledge base for relevant UI elements
         kb = UIKB(state.app)
@@ -250,6 +308,26 @@ What app and URL should be used for this goal?"""
         # Format errors
         errors_text = "\n".join([f"- {err}" for err in errors]) if errors else "None"
         
+        # Format UI context analysis
+        ui_context_text = ""
+        if ui_context['is_form_state']:
+            ui_context_text = "\n🎯 WORKFLOW DETECTION: You are in a FORM/DIALOG state!\n"
+            ui_context_text += "This means you need to:\n"
+            ui_context_text += "1. FILL all required input fields FIRST\n"
+            ui_context_text += "2. THEN click the submit/create button\n\n"
+            
+            if ui_context['unfilled_inputs']:
+                ui_context_text += "📝 INPUTS THAT NEED TO BE FILLED:\n"
+                for inp in ui_context['unfilled_inputs']:
+                    field_label = inp['field'].get('label', 'unnamed field')
+                    field_selector = inp['field'].get('selector', 'N/A')
+                    suggested_value = inp['suggested_value']
+                    ui_context_text += f"   ⚠️ PRIORITY: Fill '{field_label}' with '{suggested_value}' (selector: {field_selector})\n"
+                ui_context_text += "\n"
+        elif ui_context['has_inputs'] and not ui_context['has_submit_buttons']:
+            ui_context_text = "\n💡 UI STATE: Input fields detected, but no submit button visible yet.\n"
+            ui_context_text += "You may need to fill inputs first, or scroll to find the submit button.\n\n"
+        
         # Detect repeated failures and add strong warning
         failure_warning = ""
         if state.consecutive_failures >= 2:
@@ -285,33 +363,40 @@ IMPORTANT TIPS:
 Recent actions that didn't help: {', '.join(state.action_history[-5:])}
 """
         
-        system_prompt = """You are a web automation agent. Your job is to:
-1. Analyze the current state of the webpage
-2. Reason about what needs to be done to achieve the goal
-3. Decide on the next best action
+        system_prompt = """You are a web automation agent with WORKFLOW INTELLIGENCE. Your job is to:
+1. Analyze the current UI state (navigation vs form/dialog)
+2. Understand multi-step workflows
+3. Execute actions in the correct sequence
 
-IMPORTANT: If you see error messages or validation failures, you MUST adapt your strategy:
-- If a name/URL is already taken, try a different one (add suffix, use timestamp, etc.)
-- If an action failed, try a different approach
+🔄 WORKFLOW UNDERSTANDING:
+Creating/adding things typically follows this pattern:
+1. Click a button to open a form/dialog (e.g., "Create new project")
+2. Fill in ALL required input fields (name, description, etc.)
+3. Click submit/save button to complete the action
+
+⚠️ CRITICAL RULES:
+- If you see "WORKFLOW DETECTION: FORM/DIALOG state" → You MUST fill inputs BEFORE clicking submit
+- If inputs are marked "📝 INPUTS THAT NEED TO BE FILLED" → Fill them IMMEDIATELY
+- NEVER click submit/create buttons without filling required fields first
+- Always check if input fields exist before clicking submit buttons
+
+ERROR HANDLING:
+- If a name is taken, try a different one (add suffix, use timestamp)
+- If an action fails 2-3 times, try a completely different approach
 - Learn from errors and don't repeat the same failing action
-- After 2-3 failures, STOP trying the same thing and look for alternative paths
 
-BUTTON SELECTION STRATEGY:
-- I will show you "🎯 HIGHLY RELEVANT BUTTONS" that match your goal - PRIORITIZE THESE FIRST
-- These buttons are pre-filtered and scored based on semantic relevance
-- If you see a ⭐ starred button that matches your intent, USE IT
-- Button labels vary but mean the same: "Create Project" = "Create new project" = "New Project" = "+ Project"
-- Don't waste time on unrelated buttons when high-priority options are available
-- Icon buttons (with emojis/symbols) are just as valid as text buttons
+BUTTON SELECTION:
+- "🎯 HIGHLY RELEVANT BUTTONS" are pre-filtered - PRIORITIZE THESE FIRST
+- Button labels vary: "Create Project" = "Create new project" = "New Project" = "+ Project"
 
-You can perform these actions:
+ACTIONS:
 - click: Click on an element (requires selector)
 - type: Type text into an input field (requires selector and text)
 - scroll: Scroll the page (optional delta in pixels)
 
 Respond in JSON format:
 {
-  "reasoning": "Your analysis of the current situation, including any errors",
+  "reasoning": "Your analysis including workflow state and what needs to be done",
   "current_step": "What you're trying to accomplish right now",
   "action": {
     "type": "click|type|scroll",
@@ -330,7 +415,7 @@ Last action: {state.last_action or 'None'}
 Last action result: {state.last_action_result or 'Unknown'}
 
 Recent actions: {', '.join(state.action_history[-5:]) if state.action_history else 'None yet'}
-{failure_warning}{loop_warning}
+{ui_context_text}{failure_warning}{loop_warning}
 ERROR MESSAGES on page:
 {errors_text}
 {knowledge_hints}
@@ -338,8 +423,8 @@ ERROR MESSAGES on page:
 Available interactive elements on the page:
 {interactables_text if interactables_text else "No clear interactive elements found"}
 
-What should I do next to achieve the goal? If there are errors or loops, adapt your approach accordingly. 
-CRITICAL: If you see 🎯 HIGHLY RELEVANT BUTTONS above, choose from those FIRST - they are pre-filtered to match your goal!"""
+What should I do next to achieve the goal?
+REMEMBER THE WORKFLOW: If you're in a form, fill inputs FIRST, then submit!"""
 
         messages = [
             SystemMessage(content=system_prompt),

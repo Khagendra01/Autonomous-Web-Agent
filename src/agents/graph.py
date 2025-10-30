@@ -101,6 +101,15 @@ def reason_node(state: AgentState) -> AgentState:
     if high_priority_count > 0:
         print(f"  🎯 Found {high_priority_count} highly relevant button(s) - LLM will see these first!")
     
+    # Check UI context
+    ui_context = planner._analyze_ui_context(interactables, state.goal)
+    if ui_context['is_form_state']:
+        print(f"  📝 FORM DETECTED: {len(ui_context['input_fields'])} input(s), {len(ui_context['submit_buttons'])} submit button(s)")
+        if ui_context['unfilled_inputs']:
+            print(f"  ⚠️  {len(ui_context['unfilled_inputs'])} input(s) need to be filled before submission")
+    elif ui_context['has_inputs']:
+        print(f"  💡 Input fields detected: {len(ui_context['input_fields'])} field(s)")
+    
     state = planner.reason_and_plan(state)
     
     print(f"  Reasoning: {state.reasoning[:150]}..." if len(state.reasoning or '') > 150 else f"  Reasoning: {state.reasoning}")
