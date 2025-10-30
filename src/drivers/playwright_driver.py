@@ -374,6 +374,52 @@ def screenshot_route():
 	return Response(buf, mimetype='image/png')
 
 
+@app.post('/screenshot_region')
+def screenshot_region_route():
+    assert _page is not None
+    data = request.get_json(force=True) or {}
+    selector = data.get('selector')
+    margin = int(data.get('margin') or 24)
+    if not selector:
+        return jsonify({'ok': False, 'error': 'selector is required'}), 400
+
+    try:
+        loc = _page.locator(selector).first
+        # Ensure element is present/visible and scrolled into view
+        loc.wait_for(state='visible', timeout=5000)
+        try:
+            loc.scroll_into_view_if_needed(timeout=1000)
+        except Exception:
+            pass
+
+        box = loc.bounding_box(timeout=2000)
+        if not box:
+            return jsonify({'ok': False, 'error': 'failed to get bounding box'}), 400
+
+        # Inflate by margin and clamp
+        x = max(0, box['x'] - margin)
+        y = max(0, box['y'] - margin)
+        w = box['width'] + margin * 2
+        h = box['height'] + margin * 2
+
+        # Clamp width/height to viewport size
+        vp = _page.viewport_size or { 'width': int(x + w), 'height': int(y + h) }
+        max_w = max(1, vp['width'] - x)
+        max_h = max(1, vp['height'] - y)
+        w = max(1, min(w, max_w))
+        h = max(1, min(h, max_h))
+
+        buf = _page.screenshot(clip={
+            'x': x,
+            'y': y,
+            'width': w,
+            'height': h,
+        })
+        return Response(buf, mimetype='image/png')
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e)}), 500
+
+
 @app.post('/act')
 def act_route():
 	assert _page is not None

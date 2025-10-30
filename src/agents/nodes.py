@@ -418,6 +418,25 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     if action.action_type == 'type' and action.text:
         payload['text'] = action.text
     
+    # Capture a focused screenshot around the target (with padding) before executing
+    try:
+        if action.selector and action.action_type in ('click', 'type'):
+            crop_resp = requests.post(f"{DRIVER_URL}/screenshot_region", json={
+                'selector': action.selector,
+                'margin': 24,
+            }, timeout=10)
+            if crop_resp.status_code == 200 and crop_resp.content:
+                # Append focused image to screenshots list
+                focused_bytes = crop_resp.content
+                screenshots = state.get('screenshots') or []
+                screenshots = screenshots + [focused_bytes]
+            else:
+                screenshots = state.get('screenshots') or []
+        else:
+            screenshots = state.get('screenshots') or []
+    except Exception:
+        screenshots = state.get('screenshots') or []
+
     # Execute via driver
     try:
         resp = requests.post(f"{DRIVER_URL}/act", json=payload, timeout=15)
@@ -455,6 +474,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'step_count': state['step_count'] + 1,
             'stuck_count': 0,
             'tried_actions_by_url': tried_map,
+            'screenshots': screenshots,
         }
         
     except Exception as e:
