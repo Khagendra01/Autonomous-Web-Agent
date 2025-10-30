@@ -60,6 +60,8 @@ class AgentState(BaseModel):
     action_history: List[str] = []
     consecutive_failures: int = 0  # Track consecutive failed actions
     failed_action_type: Optional[str] = None  # Type of action that's failing
+    same_url_action_count: int = 0  # Track actions on same URL (loop detection)
+    last_url: Optional[str] = None  # Previous URL to detect loops
     step_count: int = 0
     max_steps: int = 50
     

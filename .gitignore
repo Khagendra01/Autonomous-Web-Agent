@@ -11,4 +11,4 @@ __pycache__/
 *.pyz
 *.pywz
 *.pyzw
-chrome-user/
+*chrome-user/

@@ -28,6 +28,13 @@ def observe_node(state: AgentState) -> AgentState:
     state.observation = obs
     state.current_url = obs.get('url')
     
+    # Detect if we're stuck on the same URL
+    if state.last_url == state.current_url and state.last_action_result == "Success":
+        state.same_url_action_count += 1
+    else:
+        state.same_url_action_count = 0
+    state.last_url = state.current_url
+    
     # Take screenshot
     img = executor.screenshot()
     state.screenshot = img
@@ -42,6 +49,9 @@ def observe_node(state: AgentState) -> AgentState:
         print(f"  ⚠️  ERRORS DETECTED ({len(errors)} messages):")
         for err in errors:
             print(f"     - {err}")
+    
+    if state.same_url_action_count >= 3:
+        print(f"  🔄 LOOP DETECTED: {state.same_url_action_count} actions on same URL")
     
     return state
 
@@ -60,6 +70,11 @@ def reason_node(state: AgentState) -> AgentState:
     if state.consecutive_failures >= 2:
         print(f"  🚨 REPEATED FAILURES DETECTED: {state.consecutive_failures} consecutive '{state.failed_action_type}' failures")
         print(f"  🔄 LLM will be instructed to try alternative approaches")
+    
+    # Warn about being stuck in a loop
+    if state.same_url_action_count >= 3:
+        print(f"  🔄 STUCK IN LOOP: {state.same_url_action_count} successful actions on same URL")
+        print(f"  💡 LLM will be shown more UI elements and encouraged to try different actions")
     
     # Check if we have relevant knowledge
     from .knowledge import UIKB

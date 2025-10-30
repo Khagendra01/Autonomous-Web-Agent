@@ -152,11 +152,15 @@ What app and URL should be used for this goal?"""
                 for item in relevant_knowledge[:5]
             ])
         
-        # Format interactables for LLM
+        # Format interactables for LLM - show more if stuck in loop
+        max_interactables = 50 if state.same_url_action_count >= 3 else 30
         interactables_text = "\n".join([
             f"- {i+1}. {act.get('role', 'unknown')} - \"{act.get('label', 'no label')}\" (selector: {act.get('selector', 'N/A')})"
-            for i, act in enumerate(interactables[:30])  # Limit to first 30
+            for i, act in enumerate(interactables[:max_interactables])
         ])
+        
+        if len(interactables) > max_interactables:
+            interactables_text += f"\n... and {len(interactables) - max_interactables} more elements"
         
         # Format errors
         errors_text = "\n".join([f"- {err}" for err in errors]) if errors else "None"
@@ -176,6 +180,26 @@ DO NOT REPEAT THE SAME ACTION. You MUST try a completely different approach:
 Available elements you haven't tried yet might include skip buttons, alternative navigation, or other UI controls.
 """
         
+        # Detect being stuck in a loop (same URL, successful actions)
+        loop_warning = ""
+        if state.same_url_action_count >= 3:
+            loop_warning = f"""
+🔄 LOOP DETECTED: You have performed {state.same_url_action_count} successful actions on the same URL without progress!
+You are STUCK. You MUST try something completely different:
+
+IMPORTANT TIPS:
+- Button labels may vary: "Create Project" might be "Create new project" or "New Project" or just "+ Project"
+- Look for buttons with words like: new, add, create, plus (+)
+- Try keyboard shortcuts (some apps use 'C' for create, 'N' for new)
+- Look for "+" buttons or icons
+- Check if there's a dropdown menu or context menu
+- Try scrolling to see more buttons
+- Look in different sections of the UI
+- DON'T click the same button repeatedly if nothing changes!
+
+Recent actions that didn't help: {', '.join(state.action_history[-5:])}
+"""
+        
         system_prompt = """You are a web automation agent. Your job is to:
 1. Analyze the current state of the webpage
 2. Reason about what needs to be done to achieve the goal
@@ -186,6 +210,13 @@ IMPORTANT: If you see error messages or validation failures, you MUST adapt your
 - If an action failed, try a different approach
 - Learn from errors and don't repeat the same failing action
 - After 2-3 failures, STOP trying the same thing and look for alternative paths
+
+BUTTON LABEL MATCHING:c.bat "patch"
+
+- Button labels often vary: "Create Project", "Create new project", "New Project", "+ Project" are all the same!
+- Look for semantic matches, not just exact text matches
+- If looking for "create", also consider buttons with "new", "add", or "+" symbols
+- Pay attention to ALL interactive elements in the list
 
 You can perform these actions:
 - click: Click on an element (requires selector)
@@ -213,7 +244,7 @@ Last action: {state.last_action or 'None'}
 Last action result: {state.last_action_result or 'Unknown'}
 
 Recent actions: {', '.join(state.action_history[-5:]) if state.action_history else 'None yet'}
-{failure_warning}
+{failure_warning}{loop_warning}
 ERROR MESSAGES on page:
 {errors_text}
 {knowledge_hints}
@@ -221,7 +252,8 @@ ERROR MESSAGES on page:
 Available interactive elements on the page:
 {interactables_text if interactables_text else "No clear interactive elements found"}
 
-What should I do next to achieve the goal? If there are errors, adapt your approach accordingly."""
+What should I do next to achieve the goal? If there are errors or loops, adapt your approach accordingly. 
+IMPORTANT: Look carefully at ALL available elements, especially those with 'create', 'new', 'add', or '+' in their labels!"""
 
         messages = [
             SystemMessage(content=system_prompt),
