@@ -162,6 +162,63 @@ def observe_route():
 	url = _page.url
 	a11y = _page.accessibility.snapshot(interesting_only=True)
 	interactables = to_interactables(a11y or {})
+# Augment interactables with menu/popover/dialog items that may not appear in the a11y snapshot yet
+	extra_items = _page.evaluate("""
+  () => {
+    function visible(el) {
+      const style = window.getComputedStyle(el);
+      const rect = el.getBoundingClientRect();
+      return (
+        style &&
+        style.visibility !== 'hidden' &&
+        style.display !== 'none' &&
+        rect.width > 0 && rect.height > 0
+      );
+    }
+    const results = [];
+    const containers = [
+      ...document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [aria-modal="true"], [data-state="open"]'),
+    ];
+    const candidates = new Set();
+    for (const root of containers) {
+      if (!visible(root)) continue;
+      const els = root.querySelectorAll('[role="menuitem"], [role="option"], button, a');
+      els.forEach(el => {
+        if (!visible(el)) return;
+        const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
+        if (!role) return;
+        const name = (el.getAttribute('aria-label') || el.textContent || '').trim();
+        if (!name) return;
+        const key = role + '|' + name;
+        if (candidates.has(key)) return;
+        candidates.add(key);
+        results.push({ role, name });
+      });
+    }
+    return results;
+  }
+""")
+
+# Merge extras, dedupe by role+label
+	seen = { (item['role'], item['label']) for item in interactables }
+	for it in extra_items or []:
+		role = it.get('role')
+		name = it.get('name') or ''
+		if not role or not name:
+			continue
+		key = (role, name)
+		if key in seen:
+			continue
+		seen.add(key)
+		interactables.append({
+			'role': role,
+			'label': name,
+			'selector': f'role={role}[name="{name}"]',
+		})
+
+
+
+
 	hint = _page.evaluate("""
 	  () => {
 		const btns = Array.from(document.querySelectorAll('button')).map(b => b.innerText.toLowerCase());
@@ -274,7 +331,7 @@ def act_route():
 		if t == 'click' and data.get('selector'):
 			# Robust click that handles overlays/backdrops
 			_robust_click(_page, data['selector'])
-			_page.wait_for_timeout(400)
+			_page.wait_for_timeout(700)
 		elif t == 'scroll':
 			delta = data.get('delta', 600)
 			_page.mouse.wheel(0, delta)

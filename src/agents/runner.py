@@ -57,7 +57,8 @@ def run_task(
     app_name: str | None = None,
     instruction: str | None = None,
     max_steps: int = 15,
-    output_dir: str = "captures"
+    output_dir: str = "captures",
+    recursion_limit: int = 60,
 ):
     """Run an autonomous task with a given goal.
     
@@ -115,6 +116,7 @@ def run_task(
         'screenshot_bytes': None,
         'dom_snapshot': None,
         'interactable_elements': [],
+        'errors': [],
         'action_history': [],
         'screenshots': [],
         'scored_actions': [],
@@ -122,6 +124,7 @@ def run_task(
         'goal_reached': False,
         'error': None,
         'stuck_count': 0,
+        'tried_actions_by_url': {},
     }
     
     # Create and run workflow
@@ -133,7 +136,9 @@ def run_task(
     
     try:
         # Run the workflow
-        final_state = workflow.invoke(initial_state)
+        final_state = workflow.invoke(initial_state, config={
+            "recursion_limit": recursion_limit
+        })
         
         # Save results
         print(f"\n{'='*60}")
@@ -220,6 +225,12 @@ Make sure the driver is running first:
         default=15,
         help='Maximum number of steps to take (default: 15)'
     )
+    parser.add_argument(
+        '--recursion-limit', '-r',
+        type=int,
+        default=60,
+        help='Max graph recursion limit before stopping (default: 60)'
+    )
     
     parser.add_argument(
         '--output', '-o',
@@ -238,7 +249,8 @@ Make sure the driver is running first:
         app_name=None if instruction_only else args.app,
         instruction=args.instruction if instruction_only else None,
         max_steps=args.max_steps,
-        output_dir=args.output
+        output_dir=args.output,
+        recursion_limit=args.recursion_limit
     )
     
     sys.exit(0 if success else 1)

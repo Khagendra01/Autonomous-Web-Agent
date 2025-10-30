@@ -29,6 +29,7 @@ class AgentState(TypedDict):
     screenshot_bytes: Optional[bytes]
     dom_snapshot: Optional[Dict[str, Any]]
     interactable_elements: List[Dict[str, Any]]
+    errors: List[str]
     
     # History
     action_history: List[Dict[str, Any]]
@@ -42,4 +43,8 @@ class AgentState(TypedDict):
     goal_reached: bool
     error: Optional[str]
     stuck_count: int  # Track if we're repeating actions
+    
+    # Anti-loop memory
+    # Map of URL -> list of action keys that were already tried on that view
+    tried_actions_by_url: Dict[str, List[str]]
 

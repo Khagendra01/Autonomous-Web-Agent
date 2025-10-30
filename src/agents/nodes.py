@@ -106,6 +106,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         'dom_snapshot': data['a11y'],
         'interactable_elements': data['interactables'],
         'driver_hint': data.get('hint') or '',
+        'errors': data.get('errors') or [],
         'screenshot_bytes': screenshot_bytes,
         'screenshots': state['screenshots'] + [screenshot_bytes],
     }
@@ -119,6 +120,12 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     
     return updates
 
+
+# (Removed synthesis; LLM drives all actions.)
+
+def _action_key_from_scored(action: ScoredAction) -> str:
+    # Key prioritizes selector + type which best identifies a unique UI action
+    return f"{action.action_type}|{action.selector}"
 
 def score_actions_node(state: AgentState) -> Dict[str, Any]:
     """Use LLM to score which actions will lead to the goal."""
@@ -154,7 +161,7 @@ Prefer elements related to this hint if they advance the goal.
 """
 
     prompt += f"""
-**Task**: Score each element from 0-10 based on how likely clicking it will help achieve the goal.
+**Task**: Score each element from 0-10 based on how likely acting on it (click or type) will help achieve the goal.
 - 10 = Directly achieves the goal or is the next critical step
 - 7-9 = Very likely to progress toward the goal
 - 4-6 = Might be useful
@@ -166,15 +173,24 @@ Also consider:
 - If we're in a modal/form, look for "Save", "Submit", "Create" buttons
 - If stuck, try different approaches
 - If the goal mentions an object (e.g., "project"), prefer actions that explicitly reference that object (e.g., "Add project", "New project", "Create project").
+- If a textbox for the object's name is present (e.g., "Project name"), propose a `type` action with appropriate text extracted from the goal.
 
 Return a JSON array with this structure:
 [
   {{
-    "selector": "role=button[name=\\"Create project\\"]",
+    "selector": "role=button[name=\"Create project\"]",
     "label": "Create project",
     "action_type": "click",
     "score": 9.5,
     "reasoning": "This button directly opens the project creation flow"
+  }},
+  {{
+    "selector": "role=textbox[name=\"Project name\"]",
+    "label": "Project name",
+    "action_type": "type",
+    "text": "gamma",
+    "score": 10,
+    "reasoning": "Entering the required project name aligns with the goal"
   }},
   ...
 ]
@@ -213,54 +229,29 @@ Return ONLY the JSON array, no additional text."""
             )
             for a in scored_actions_raw
         ]
-        
-        # Heuristic re-ranking to reduce loops and prioritize goal-relevant CTAs
-        goal_lower = (state.get('goal') or '').lower()
-        last_selector = state['action_history'][-1]['selector'] if state['action_history'] else None
 
-        adjusted: List[ScoredAction] = []
-        for a in scored_actions:
-            bonus = 0.0
-            label_lower = (a.label or '').lower()
-            # Prefer Add/New/Create + goal noun (e.g., project)
-            if any(k in label_lower for k in ['add', 'new', 'create']) and any(obj in goal_lower for obj in ['project', 'issue', 'task', 'page']):
-                if 'project' in goal_lower and 'project' in label_lower:
-                    bonus += 3.0
-                else:
-                    bonus += 2.0
-            # Penalize immediate repetition of the exact same selector
-            if last_selector and a.selector == last_selector:
-                bonus -= 2.5
-            adjusted.append(ScoredAction(
-                action_type=a.action_type,
-                selector=a.selector,
-                label=a.label,
-                score=a.score + bonus,
-                reasoning=a.reasoning,
-                text=a.text,
-            ))
-
-        # Sort by adjusted score (highest first)
-        adjusted.sort(key=lambda x: x.score, reverse=True)
-
-        # Choose the top non-repeated action if available
-        next_action = None
-        for cand in adjusted:
-            if not last_selector or cand.selector != last_selector:
-                next_action = cand
-                break
-        if next_action is None and adjusted:
-            next_action = adjusted[0]
+        # Sort by the LLM-provided score only (no heuristics)
+        adjusted: List[ScoredAction] = sorted(scored_actions, key=lambda x: x.score, reverse=True)
 
         print(f"  Scored {len(adjusted)} actions")
+        # Show top 3 as a quick summary
         for i, action in enumerate(adjusted[:3]):
             print(f"  {i+1}. [{action.score:.1f}] {action.action_type} '{action.label}' - {action.reasoning}")
 
+        # Also show the same-score group (within 1.0 of the top score)
+        if adjusted:
+            top_score = adjusted[0].score
+            same_group = [a for a in adjusted if a.score >= top_score - 1.0][:8]
+            if len(same_group) > 1:
+                print("  Same-score group (±1.0 from top):")
+                for a in same_group:
+                    suffix = f" → type text='{a.text}'" if (a.action_type == 'type' and a.text) else ""
+                    print(f"    - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix}")
+
         return {
             'scored_actions': adjusted,
-            'next_action': next_action,
+            'next_action': None,  # selection is delegated to decide_action_node
         }
-        
     except json.JSONDecodeError as e:
         print(f"  ❌ Failed to parse LLM response: {e}")
         print(f"  Raw response: {content[:200]}")
@@ -269,6 +260,123 @@ Return ONLY the JSON array, no additional text."""
             'next_action': None,
             'error': f"Failed to parse LLM response: {e}"
         }
+def decide_action_node(state: AgentState) -> Dict[str, Any]:
+    """Use LLM to choose the next action from scored candidates, considering goal, errors, and history."""
+    print(f"\n[DECIDE] Selecting next action using LLM policy")
+
+    scored = state.get('scored_actions') or []
+    if not scored:
+        return { 'next_action': state.get('next_action') }
+
+    # Filter out actions already tried on this URL to avoid loops
+    current_url = state.get('current_url') or ''
+    tried_map = state.get('tried_actions_by_url') or {}
+    tried_here: List[str] = tried_map.get(current_url, [])
+    filtered_scored: List[ScoredAction] = [a for a in scored if _action_key_from_scored(a) not in tried_here]
+    if filtered_scored:
+        if len(filtered_scored) != len(scored):
+            print("  Skipping previously tried action(s) on this page; choosing next best candidate")
+        base_list = filtered_scored
+    else:
+        # If we've exhausted options, fall back to full list to avoid stalling
+        base_list = scored
+
+    # Prepare compact candidate list for the prompt
+    candidates = [
+        {
+            'i': i,
+            'action_type': a.action_type,
+            'label': a.label,
+            'selector': a.selector,
+            'score': a.score,
+            'text': a.text,
+            'reasoning': a.reasoning,
+        }
+        for i, a in enumerate(base_list[:12]) # cap to avoid token bloat
+    ]
+
+    recent = state['action_history'][-5:]
+    errors = state.get('errors') or []
+
+    prompt = f"""You are a decision policy that chooses the next UI action from candidates.
+
+Goal: {state['goal']}
+Current URL: {state['current_url']}
+Errors/Validation: {json.dumps(errors)}
+
+Recent actions (last 5): {json.dumps(recent)}
+
+Candidates (choose one by index 'i'):
+{json.dumps(candidates, indent=2)}
+
+Guidelines:
+- Prefer actions that directly advance the goal semantics (e.g., delete when goal mentions delete).
+- If validation indicates required fields, prefer typing the missing value before submitting.
+- If a modal/menu is open, prefer the confirm/primary/destructive action inside it rather than reopening the menu.
+- Avoid repeating the exact same action unless necessary.
+- Consider the provided scores but you may override them when context (goal/errors) dictates a better choice.
+
+Return ONLY a JSON object in this shape:
+{{
+  "i": <candidate index>,
+  "rationale": "why this is best",
+  "textOverride": "optional text for type actions or null"
+}}"""
+
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": "Select the best next action for goal-directed web automation. Return only valid JSON."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.2,
+    )
+
+    content = response.choices[0].message.content.strip()
+    if content.startswith("```"):
+        content = content.split("```")[1]
+        if content.startswith("json"):
+            content = content[4:]
+        content = content.strip()
+
+    try:
+        decision = json.loads(content)
+        idx = int(decision.get('i', 0))
+        rationale = decision.get('rationale') or ''
+        text_override = decision.get('textOverride')
+
+        if 0 <= idx < len(candidates):
+            chosen = base_list[idx]
+            # Apply optional text override if LLM provided it
+            if chosen.action_type == 'type' and text_override is not None:
+                chosen = ScoredAction(
+                    action_type=chosen.action_type,
+                    selector=chosen.selector,
+                    label=chosen.label,
+                    score=chosen.score,
+                    reasoning=rationale or chosen.reasoning,
+                    text=str(text_override),
+                )
+            else:
+                chosen = ScoredAction(
+                    action_type=chosen.action_type,
+                    selector=chosen.selector,
+                    label=chosen.label,
+                    score=chosen.score,
+                    reasoning=rationale or chosen.reasoning,
+                    text=chosen.text,
+                )
+
+            print(f"  Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
+            print(f"  Policy rationale: {rationale}")
+            return { 'next_action': chosen }
+
+        # Fallback to previous heuristic choice
+        return { 'next_action': state.get('next_action') }
+
+    except Exception as e:
+        print(f"  ⚠️  Failed to parse decision: {e}")
+        return { 'next_action': state.get('next_action') }
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
@@ -314,10 +422,20 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'reasoning': action.reasoning,
         }
         
+        # Record this action as tried for the current URL to avoid repeating it
+        current_url = state.get('current_url') or ''
+        tried_map = dict(state.get('tried_actions_by_url') or {})
+        tried_here = list(tried_map.get(current_url, []))
+        action_key = _action_key_from_scored(action)
+        if action_key not in tried_here:
+            tried_here.append(action_key)
+        tried_map[current_url] = tried_here
+        
         return {
             'action_history': state['action_history'] + [action_record],
             'step_count': state['step_count'] + 1,
             'stuck_count': 0,
+            'tried_actions_by_url': tried_map,
         }
         
     except Exception as e:
@@ -399,13 +517,15 @@ def should_continue(state: AgentState) -> str:
         print(f"\n⚠️  Max steps ({state['max_steps']}) reached")
         return "end"
     
-    if state.get('stuck_count', 0) >= 3:
+    if state.get('stuck_count', 0) >= 2:
         print(f"\n⚠️  Agent appears stuck (failed actions: {state['stuck_count']})")
         return "end"
     
+    # Do not end immediately on transient errors; keep going unless stuck/max_steps/goal.
     if state.get('error'):
-        print(f"\n⚠️  Error encountered: {state['error']}")
-        return "end"
+        print(f"\n⚠️  Error encountered (continuing): {state['error']}")
+        # Clear error so it doesn't spam subsequent iterations
+        return "continue"
     
     return "continue"
 
