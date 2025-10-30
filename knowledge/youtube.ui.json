@@ -1,0 +1,134 @@
+{
+  "app": "youtube",
+  "interactables": [
+    {
+      "label": "Search",
+      "role": "combobox",
+      "selector": "role=combobox[name=\"Search\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Search",
+      "role": "button",
+      "selector": "role=button[name=\"Search\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Search with your voice",
+      "role": "button",
+      "selector": "role=button[name=\"Search with your voice\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Clear search query",
+      "role": "button",
+      "selector": "role=button[name=\"Clear search query\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Report search predictions",
+      "role": "button",
+      "selector": "role=button[name=\"Report search predictions\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Search filters",
+      "role": "button",
+      "selector": "role=button[name=\"Search filters\"]",
+      "semantic": [
+        "filter",
+        "search"
+      ]
+    },
+    {
+      "label": "Book now",
+      "role": "link",
+      "selector": "role=link[name=\"Book now\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "Rick Roll (Different link + no ads) 8 seconds",
+      "role": "link",
+      "selector": "role=link[name=\"Rick Roll (Different link + no ads) 8 seconds\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Bundle 100% fiber-optic Fios Home Internet and YouTube TV with Verizon. Switch & save big.",
+      "role": "link",
+      "selector": "role=link[name=\"Bundle 100% fiber-optic Fios Home Internet and YouTube TV with Verizon. Switch & save big.\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "ChrissyxEdits",
+      "role": "link",
+      "selector": "role=link[name=\"ChrissyxEdits\"]",
+      "semantic": [
+        "edit"
+      ]
+    },
+    {
+      "label": "The new Harmonize feature matches lighting, shadows, and colors for a seamless scene.",
+      "role": "link",
+      "selector": "role=link[name=\"The new Harmonize feature matches lighting, shadows, and colors for a seamless scene.\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "rick astley - never gonna give you up (karaoke version)",
+      "role": "button",
+      "selector": "role=button[name=\"rick astley - never gonna give you up (karaoke version)\"]",
+      "semantic": [
+        "submit"
+      ]
+    },
+    {
+      "label": "Never Gonna Give You Up | Rick Astley Rocks New Year's Eve - BBC 3 minutes, 54 seconds",
+      "role": "link",
+      "selector": "role=link[name=\"Never Gonna Give You Up | Rick Astley Rocks New Year's Eve - BBC 3 minutes, 54 seconds\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Previous (SHIFT+p)",
+      "role": "button",
+      "selector": "role=button[name=\"Previous (SHIFT+p)\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Next (SHIFT+n)",
+      "role": "button",
+      "selector": "role=button[name=\"Next (SHIFT+n)\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Save to playlist",
+      "role": "button",
+      "selector": "role=button[name=\"Save to playlist\"]",
+      "semantic": [
+        "submit"
+      ]
+    }
+  ]
+}

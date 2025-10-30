@@ -97,6 +97,20 @@ What app and URL should be used for this goal?"""
         goal_lower = goal.lower()
         score = 0
         
+        # 🎥 YOUTUBE SPECIAL HANDLING: For "play" goals, prioritize video links over search buttons
+        if 'youtube' in goal_lower and any(word in goal_lower for word in ['play', 'watch', 'video']):
+            # Boost for links (actual videos) vs buttons (search suggestions)
+            if button_role == 'link':
+                score += 20  # Big boost for video links
+            elif button_role == 'button' and 'search' in label_lower:
+                score -= 10  # Penalize search suggestion buttons
+            
+            # Look for video-related indicators in label
+            video_indicators = ['official', 'music video', 'mv', 'hd', '4k', 'lyrics', 'full']
+            for indicator in video_indicators:
+                if indicator in label_lower:
+                    score += 5
+        
         # Extract key action words from goal
         action_words = []
         if any(word in goal_lower for word in ['create', 'new', 'add', 'make']):
@@ -127,7 +141,7 @@ What app and URL should be used for this goal?"""
             if word in label_lower:
                 score += 10
         
-        # Boost score for button role
+        # Boost score for button role (general case)
         if button_role == 'button':
             score += 2
         
@@ -201,12 +215,20 @@ What app and URL should be used for this goal?"""
         interactables = obs.get('interactables', [])
         errors = obs.get('errors', [])
         
+        # 🎯 QUICK CHECK: If we're on a YouTube video page for a "play" goal, we're done!
+        goal_lower = state.goal.lower()
+        current_url = state.current_url or ''
+        if any(word in goal_lower for word in ['youtube', 'play', 'watch']) and '/watch?v=' in current_url:
+            state.reasoning = "Successfully navigated to YouTube video page. Video is auto-playing."
+            state.current_step = "Goal achieved - video is playing"
+            state.next_action = {'type': 'none', 'intent': 'Video is already playing'}
+            return state
+        
         # Analyze UI context
         ui_context = self._analyze_ui_context(interactables, state.goal)
         
         # Query knowledge base for relevant UI elements
         kb = UIKB(state.app)
-        goal_lower = state.goal.lower()
         relevant_knowledge = []
         seen_items = set()  # Track to avoid duplicates
         
@@ -365,10 +387,20 @@ Recent actions that didn't help: {', '.join(state.action_history[-5:])}
         
         system_prompt = """You are a web automation agent with WORKFLOW INTELLIGENCE. Your job is to:
 1. Analyze the current UI state (navigation vs form/dialog)
-2. Understand multi-step workflows
+2. Understand multi-step workflows specific to each platform
 3. Execute actions in the correct sequence
 
 🔄 WORKFLOW UNDERSTANDING:
+
+📺 YOUTUBE WORKFLOWS:
+- To PLAY a video: Search → Click actual VIDEO TITLE/THUMBNAIL on results → Video plays
+- Search suggestions (buttons) just execute the search - they DON'T play videos!
+- Look for links with role="link" containing video titles to actually open videos
+- Success = URL contains "/watch?v=" (you're on the video page)
+- ⚠️ IMPORTANT: Videos AUTO-PLAY when you navigate to them. If URL has /watch?v=, the video is ALREADY PLAYING!
+- Once on /watch?v= page, DO NOT click play buttons - you're DONE!
+
+📝 CREATE/ADD WORKFLOWS (Linear, GitHub, Jira, etc):
 Creating/adding things typically follows this pattern:
 1. Click a button to open a form/dialog (e.g., "Create new project")
 2. Fill in ALL required input fields (name, description, etc.)
@@ -385,22 +417,37 @@ ERROR HANDLING:
 - If an action fails 2-3 times, try a completely different approach
 - Learn from errors and don't repeat the same failing action
 
-BUTTON SELECTION:
-- "🎯 HIGHLY RELEVANT BUTTONS" are pre-filtered - PRIORITIZE THESE FIRST
-- Button labels vary: "Create Project" = "Create new project" = "New Project" = "+ Project"
+🎯 SELECTOR SELECTION - CRITICALLY IMPORTANT:
+You will be provided a list of "Available interactive elements" with their exact selectors.
+YOU MUST ONLY USE SELECTORS FROM THIS LIST - DO NOT INVENT OR MODIFY THEM!
+
+Rules for choosing selectors:
+1. LOOK at the list of available elements carefully
+2. CHOOSE the element that is most semantically relevant to your goal
+3. COPY the selector EXACTLY as provided - character for character
+4. DO NOT make up button names like "role=button[name='Rick Roll']" if it's not in the list
+5. DO NOT assume what buttons should exist - only use what IS there
+6. Use semantic understanding to map your goal to the CLOSEST matching element
+7. "🎯 HIGHLY RELEVANT BUTTONS" are pre-scored - check these first, but verify the selector exists
+
+Example:
+- Goal: "play rick roll song"
+- Available: button - "Rick Astley - Never Gonna Give You Up (Official Music Video)" (selector: role=link[name='...'])
+- ✅ CORRECT: Use the selector for "Rick Astley - Never Gonna Give You Up" (it's the Rick Roll!)
+- ❌ WRONG: Make up role=button[name='rick roll song'] - this doesn't exist!
 
 ACTIONS:
-- click: Click on an element (requires selector)
-- type: Type text into an input field (requires selector and text)
+- click: Click on an element (requires selector from the list)
+- type: Type text into an input field (requires selector from the list and text)
 - scroll: Scroll the page (optional delta in pixels)
 
 Respond in JSON format:
 {
-  "reasoning": "Your analysis including workflow state and what needs to be done",
+  "reasoning": "Your analysis including which element you chose and WHY it matches semantically",
   "current_step": "What you're trying to accomplish right now",
   "action": {
     "type": "click|type|scroll",
-    "selector": "role=button[name='...']",
+    "selector": "EXACT selector copied from the list",
     "text": "text to type (if type action)",
     "delta": 700,
     "intent": "brief description of why"
@@ -451,6 +498,51 @@ REMEMBER THE WORKFLOW: If you're in a form, fill inputs FIRST, then submit!"""
             state.current_step = result.get('current_step', '')
             state.next_action = result.get('action', {})
             
+            # ✅ VALIDATE: Check if the selector actually exists in the available interactables
+            action_type = state.next_action.get('type', '')
+            if action_type in ['click', 'type']:
+                proposed_selector = state.next_action.get('selector', '')
+                
+                # Get list of valid selectors
+                valid_selectors = [item.get('selector', '') for item in interactables]
+                
+                if proposed_selector and proposed_selector not in valid_selectors:
+                    print(f"[WARNING] LLM hallucinated selector: {proposed_selector}")
+                    print(f"[WARNING] This selector does not exist in available elements!")
+                    print(f"[WARNING] Forcing LLM to reconsider from actual options...")
+                    
+                    # Find the closest match based on the intent/reasoning
+                    intent = state.next_action.get('intent', '').lower()
+                    reasoning = state.reasoning.lower()
+                    
+                    # Try to find a semantically similar element
+                    best_match = None
+                    best_score = 0
+                    
+                    for item in interactables:
+                        label = item.get('label', '').lower()
+                        role = item.get('role', '')
+                        score = 0
+                        
+                        # Score based on overlap with intent and reasoning
+                        for word in intent.split() + reasoning.split():
+                            if len(word) > 3 and word in label:
+                                score += 1
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_match = item
+                    
+                    if best_match and best_score > 0:
+                        print(f"[FIX] Using closest match: {best_match.get('label')} (selector: {best_match.get('selector')})")
+                        state.next_action['selector'] = best_match.get('selector')
+                        state.reasoning += f"\n[AUTO-CORRECTED: LLM proposed invalid selector, using closest match: {best_match.get('label')}]"
+                    else:
+                        # No good match found, just scroll to explore
+                        print(f"[FIX] No close match found. Scrolling to explore more.")
+                        state.next_action = {'type': 'scroll', 'delta': 700, 'intent': 'explore to find relevant elements'}
+                        state.reasoning += "\n[AUTO-CORRECTED: Invalid selector, scrolling to explore]"
+            
         except Exception as e:
             print(f"[ERROR] LLM planning failed: {e}")
             # Fallback: scroll
@@ -465,14 +557,37 @@ REMEMBER THE WORKFLOW: If you're in a form, fill inputs FIRST, then submit!"""
         obs = state.observation or {}
         hint = obs.get('hint', '')
         
+        # 🎯 PRE-VALIDATION: Check for obvious success patterns before calling LLM
+        goal_lower = state.goal.lower()
+        current_url = state.current_url or ''
+        
+        # YouTube: If goal is to play/watch video and we're on /watch?v=, it's success!
+        if any(word in goal_lower for word in ['youtube', 'play', 'watch']) and '/watch?v=' in current_url:
+            state.done = True
+            state.success = True
+            print(f"[SUCCESS] Video is playing! URL: {current_url}")
+            print(f"[SUCCESS] YouTube videos auto-play when navigated to - goal achieved!")
+            return state
+        
         system_prompt = """You are validating if a web automation goal has been completed.
 Analyze the current state and determine if the goal has been successfully achieved.
+
+⚠️ IMPORTANT VALIDATION RULES:
+- For "play video" goals on YouTube: URL MUST contain "/watch?v=" to be on an actual video page
+- For "search" goals: Being on search results page (/results?search_query=...) is SUCCESS
+- For "create/add" goals: Check if the item was actually created (look for confirmation)
+- Don't assume success just because an action was clicked - verify the RESULT
+
+COMMON MISTAKES TO AVOID:
+- YouTube: Clicking a search suggestion ≠ playing a video. Must be on /watch?v= page!
+- Linear/Jira: Opening a dialog ≠ creating an item. Must fill form AND submit!
+- GitHub: Clicking "New repo" ≠ creating repo. Must complete the form!
 
 Respond in JSON format:
 {
   "completed": true/false,
   "confidence": 0.0-1.0,
-  "reasoning": "Why you think it's complete or not",
+  "reasoning": "Why you think it's complete or not, based on URL and actions",
   "success": true/false
 }"""
 
@@ -483,7 +598,12 @@ Last action: {state.last_action}
 Recent actions: {', '.join(state.action_history[-5:]) if state.action_history else 'None'}
 Hint from page: {hint}
 
-Has the goal been achieved? Is the task complete?"""
+Has the goal been achieved? Is the task complete?
+
+For reference:
+- If goal involves "play video on YouTube", URL should be youtube.com/watch?v=... (not just search results)
+- If goal involves "create/add", there should be confirmation of creation
+- Check the URL pattern to verify we're on the right page type"""
 
         messages = [
             SystemMessage(content=system_prompt),
