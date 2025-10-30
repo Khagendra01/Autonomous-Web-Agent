@@ -1,0 +1,249 @@
+"""Main runner for the autonomous web agent."""
+import sys
+import argparse
+import requests
+from pathlib import Path
+from urllib.parse import urlparse
+from .workflow import create_agent_workflow
+from .state import AgentState
+from .utils.storage import RunStorage
+from dotenv import load_dotenv
+
+
+def initialize_driver(app_name: str, start_url: str):
+    """Initialize the Playwright driver."""
+    print(f"\n{'='*60}")
+    print(f"🚀 Initializing driver for {app_name}")
+    print(f"{'='*60}")
+    
+    payload = {
+        'app': app_name,
+        'url': start_url,
+    }
+    
+    try:
+        resp = requests.post("http://127.0.0.1:3999/init", json=payload, timeout=30)
+        result = resp.json()
+        
+        if not result.get('ok'):
+            raise RuntimeError(f"Driver initialization failed: {result.get('error')}")
+        
+        print(f"✓ Driver initialized successfully")
+        print(f"✓ Navigated to: {start_url}")
+        return True
+        
+    except requests.exceptions.ConnectionError:
+        print("\n❌ Cannot connect to driver!")
+        print("Please start the driver first:")
+        print("  python -m src.drivers.playwright_driver")
+        return False
+    except Exception as e:
+        print(f"\n❌ Driver initialization error: {e}")
+        return False
+
+
+def extract_app_name(url: str) -> str:
+    """Extract app name from URL."""
+    parsed = urlparse(url)
+    domain = parsed.netloc.replace('www.', '')
+    # Get first part of domain (e.g., 'linear' from 'linear.app')
+    app_name = domain.split('.')[0]
+    return app_name.capitalize()
+
+
+def run_task(
+    goal: str | None = None,
+    start_url: str | None = None,
+    app_name: str | None = None,
+    instruction: str | None = None,
+    max_steps: int = 15,
+    output_dir: str = "captures"
+):
+    """Run an autonomous task with a given goal.
+    
+    Args:
+        goal: Natural language description of what to accomplish
+        start_url: URL to start from
+        app_name: Optional app name (auto-detected from URL if not provided)
+        max_steps: Maximum number of steps to take
+        output_dir: Directory to save captures
+    """
+    # Ensure environment variables from .env are loaded (OPENAI_API_KEY, etc.)
+    load_dotenv()
+
+    # Determine mode: instruction-only vs explicit goal/url
+    instruction_only = instruction is not None and (goal is None and start_url is None)
+
+    # Auto-detect app name if not provided (explicit mode)
+    if not instruction_only and not app_name and start_url:
+        app_name = extract_app_name(start_url)
+    
+    print(f"\n{'='*60}")
+    if instruction_only:
+        print(f"📝 Instruction: {instruction}")
+    else:
+        print(f"🎯 Goal: {goal}")
+        print(f"🌐 Start URL: {start_url}")
+        print(f"📱 App: {app_name}")
+    print(f"{'='*60}")
+    
+    # Initialize driver only in explicit mode; in instruction-only mode, bootstrap node handles init
+    if not instruction_only:
+        if not initialize_driver(app_name, start_url):
+            return False
+    
+    # Create storage with sanitized task name
+    import re
+    task_slug_source = (goal or instruction or 'task').lower()
+    task_slug = re.sub(r'[^a-z0-9_-]', '_', task_slug_source[:50])
+    
+    storage = RunStorage(
+        base_dir=output_dir,
+        app=(app_name or 'webapp').lower(),
+        task_slug=task_slug
+    )
+    
+    # Create initial state
+    initial_state: AgentState = {
+        'instruction': instruction or (goal or ''),
+        'goal': goal or (instruction or ''),
+        'app_name': app_name or '',
+        'base_url': start_url or '',
+        'max_steps': max_steps,
+        'step_count': 0,
+        'current_url': start_url or '',
+        'screenshot_bytes': None,
+        'dom_snapshot': None,
+        'interactable_elements': [],
+        'action_history': [],
+        'screenshots': [],
+        'scored_actions': [],
+        'next_action': None,
+        'goal_reached': False,
+        'error': None,
+        'stuck_count': 0,
+    }
+    
+    # Create and run workflow
+    print(f"\n{'='*60}")
+    print(f"🤖 Starting autonomous agent workflow")
+    print(f"{'='*60}")
+    
+    workflow = create_agent_workflow()
+    
+    try:
+        # Run the workflow
+        final_state = workflow.invoke(initial_state)
+        
+        # Save results
+        print(f"\n{'='*60}")
+        print(f"💾 Saving results")
+        print(f"{'='*60}")
+        
+        # Save screenshots
+        for i, screenshot in enumerate(final_state['screenshots']):
+            filename = f"step_{i:03d}.png"
+            path = storage.save_screenshot(screenshot, filename)
+            print(f"  Saved: {filename}")
+            
+            # Add to manifest
+            action = final_state['action_history'][i] if i < len(final_state['action_history']) else None
+            storage.append_state({
+                'step': i,
+                'screenshot': filename,
+                'url': final_state['current_url'] if i == len(final_state['screenshots']) - 1 else None,
+                'action': action,
+            })
+        
+        # Save manifest
+        storage.flush()
+        
+        # Print summary
+        print(f"\n{'='*60}")
+        print(f"✅ Task completed!")
+        print(f"{'='*60}")
+        print(f"📊 Summary:")
+        print(f"  Steps taken: {final_state['step_count']}")
+        print(f"  Screenshots captured: {len(final_state['screenshots'])}")
+        print(f"  Goal reached: {'Yes ✓' if final_state['goal_reached'] else 'No ✗'}")
+        print(f"  Output directory: {storage.root}")
+        
+        if final_state.get('error'):
+            print(f"  Error: {final_state['error']}")
+        
+        print(f"\n{'='*60}")
+        
+        return True
+        
+    except KeyboardInterrupt:
+        print("\n\n⚠️  Interrupted by user")
+        return False
+    except Exception as e:
+        print(f"\n\n❌ Error during workflow execution: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Autonomous Web Agent - Task-Agnostic UI Capture",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Create a project in Linear
+  python -m src.agents.runner "Create a new project in Linear"
+  
+  # Filter a Notion database
+  python -m src.agents.runner "Open a database and apply a filter in Notion"
+  
+  # Create a GitHub issue
+  python -m src.agents.runner "Create a new issue in this GitHub repo"
+
+Make sure the driver is running first:
+  python -m src.drivers.playwright_driver
+        """
+    )
+    
+    # Positional instruction enables instruction-only mode
+    parser.add_argument('instruction', nargs='?', help='Natural language instruction (app + goal)')
+    
+    # Optional explicit flags (backward compatible)
+    parser.add_argument('--goal', '-g', help='Goal to accomplish (explicit mode)')
+    parser.add_argument('--url', '-u', help='Starting URL (explicit mode)')
+    parser.add_argument('--app', '-a', help='Application name (explicit mode)')
+    
+    parser.add_argument(
+        '--max-steps', '-m',
+        type=int,
+        default=15,
+        help='Maximum number of steps to take (default: 15)'
+    )
+    
+    parser.add_argument(
+        '--output', '-o',
+        default='captures',
+        help='Output directory for captures (default: captures)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Decide mode
+    instruction_only = args.instruction and (not args.goal and not args.url)
+    
+    success = run_task(
+        goal=None if instruction_only else args.goal,
+        start_url=None if instruction_only else args.url,
+        app_name=None if instruction_only else args.app,
+        instruction=args.instruction if instruction_only else None,
+        max_steps=args.max_steps,
+        output_dir=args.output
+    )
+    
+    sys.exit(0 if success else 1)
+
+
+if __name__ == "__main__":
+    main()
+

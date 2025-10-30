@@ -1,88 +1,45 @@
-from __future__ import annotations
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict, List, Optional
-from datetime import datetime
+"""State definition for the autonomous web agent."""
+from typing import TypedDict, List, Dict, Any, Optional
+from dataclasses import dataclass
 
 
-class Interactable(BaseModel):
-    model_config = ConfigDict(ser_json_timedelta='iso8601')
-    
-    role: str
-    label: Optional[str] = None
-    selector: Optional[str] = None
-
-
-class CapturedState(BaseModel):
-    model_config = ConfigDict(ser_json_timedelta='iso8601')
-    
-    id: str
+@dataclass
+class ScoredAction:
+    """An action with its LLM-assigned score."""
+    action_type: str  # 'click', 'type', 'scroll'
+    selector: str
     label: str
-    url: Optional[str]
-    dom_fingerprint: str
-    visual_hash: str
-    screenshot_path: str
-    interactables: List[Interactable] = []
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    action_leading_here: Optional[str] = None
+    score: float  # 0-10, higher = more likely to reach goal
+    reasoning: str
+    text: Optional[str] = None  # for 'type' actions
 
 
-class ActionLog(BaseModel):
-    """Rich log of what was attempted, what was done, and the result."""
-    model_config = ConfigDict(ser_json_timedelta='iso8601')
-    
-    step: int
-    intent: str  # What agent was trying to accomplish (from reasoning)
-    action: str  # What action was taken (e.g., "type 'test' in textbox")
-    result: str  # Success or error
-    
-    
-class AgentMemory(BaseModel):
-    model_config = ConfigDict(ser_json_timedelta='iso8601')
-    
-    seen_fingerprints: List[str] = []
-    states: List[CapturedState] = []
-    action_logs: List[ActionLog] = []  # Rich history of actions
-
-
-class AgentState(BaseModel):
-    model_config = ConfigDict(ser_json_timedelta='iso8601', arbitrary_types_allowed=True)
-    
-    # Core config
-    app: str
-    goal: str
-    cookies_path: str
-    dataset_dir: str
-    working_dir: str
+class AgentState(TypedDict):
+    """The state passed between nodes in the LangGraph."""
+    # Instruction/task info
+    instruction: str  # Natural language instruction from user
+    goal: str  # Parsed/normalized goal (defaults to instruction)
+    app_name: str
+    base_url: str
+    max_steps: int
     
     # Current state
-    current_url: Optional[str] = None
-    current_fingerprint: Optional[str] = None  # Current DOM fingerprint (state ID)
-    observation: Dict[str, Any] = {}
-    screenshot: Optional[bytes] = None
-    
-    # Reasoning & planning
-    reasoning: Optional[str] = None  # LLM reasoning about current state
-    plan: Optional[str] = None  # Step-by-step plan
-    current_step: Optional[str] = None  # What we're trying to do now
-    next_action: Optional[Dict[str, Any]] = None  # Planned action
+    step_count: int
+    current_url: str
+    screenshot_bytes: Optional[bytes]
+    dom_snapshot: Optional[Dict[str, Any]]
+    interactable_elements: List[Dict[str, Any]]
     
     # History
-    last_action: Optional[str] = None
-    last_action_result: Optional[str] = None  # Result of last action (success/error)
-    last_fingerprint: Optional[str] = None  # Previous state fingerprint
-    action_history: List[str] = []
-    consecutive_failures: int = 0  # Track consecutive failed actions
-    failed_action_type: Optional[str] = None  # Type of action that's failing
-    same_url_action_count: int = 0  # Track actions on same URL (loop detection)
-    last_url: Optional[str] = None  # Previous URL to detect loops
-    step_count: int = 0
-    max_steps: int = 50
+    action_history: List[Dict[str, Any]]
+    screenshots: List[bytes]
     
-    # Completion
-    done: bool = False
-    success: bool = False
-    failure_reason: Optional[str] = None
+    # LLM scoring
+    scored_actions: List[ScoredAction]
+    next_action: Optional[ScoredAction]
     
-    # Memory
-    memory: AgentMemory = Field(default_factory=AgentMemory)
+    # Status
+    goal_reached: bool
+    error: Optional[str]
+    stuck_count: int  # Track if we're repeating actions
 
