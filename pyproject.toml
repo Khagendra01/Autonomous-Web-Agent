@@ -5,6 +5,8 @@ description = "Local-first autonomous UI-state capture with Playwright + LangGra
 requires-python = ">=3.10"
 dependencies = [
   "langgraph>=0.2.0",
+  "langchain>=0.3.0",
+  "langchain-openai>=0.2.0",
   "pydantic>=2.8.0",
   "requests>=2.32.0",
   "pillow>=10.4.0",
@@ -16,7 +18,8 @@ dependencies = [
   "networkx>=3.3",
   "matplotlib>=3.9.2",
   "playwright>=1.48.0",
-  "flask>=3.0.3"
+  "flask>=3.0.3",
+  "python-dotenv>=1.0.0"
 ]
 
 [tool.uv]

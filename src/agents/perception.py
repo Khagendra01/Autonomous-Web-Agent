@@ -56,7 +56,8 @@ class Perception:
         )
         state.memory.states.append(cap)
         state.memory.seen_fingerprints.append(dom_fp)
-        storage.append_state(cap.dict())
+        # Convert to dict with datetime serialization
+        storage.append_state(cap.model_dump(mode='json'))
 
         # Learn newly seen labeled buttons as potential semantics
         kb = UIKB(state.app)

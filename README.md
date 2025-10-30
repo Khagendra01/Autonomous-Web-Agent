@@ -1,25 +1,132 @@
-# AutoUI Agent — Local MVP
+# Autonomous Web Agent
 
-Local-first autonomous UI-state capture with Playwright (Chromium) and LangGraph (Python). Python-only.
+Local-first autonomous web agent using **LangGraph**, **OpenAI GPT-4o**, and **Playwright**. The agent reasons about web pages and takes actions to achieve goals.
 
-## Setup
+## Features
 
-Python:
-- Create venv and install: pip install -U pip && pip install -e .
+- 🧠 **LLM-powered reasoning**: GPT-4o analyzes page state and plans actions
+- 🔄 **LangGraph workflow**: Observe → Reason → Act → Validate loop
+- 🌐 **Playwright automation**: Browser control with accessibility tree
+- 💾 **State capture**: Screenshots and interaction history
+- 🔐 **Persistent auth**: Chrome profile preserves login sessions
 
-Install browsers:
-- python -m playwright install chromium
+## Quick Start
 
-## Usage
+### 1. Setup Environment
 
-1) Record cookies:
-   - Default (persistent Chrome profile):
-     - python scripts/record_cookies.py
-   - Or CDP (connect to your existing Chrome):
-     - Close Chrome, then start: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=9222
-     - USE_CDP=1 python scripts/record_cookies.py
-2) Start driver: python -m src.drivers.playwright_driver
-3) Run agent: python -m src.agents.graph run --app linear --goal "Create a project in Linear named Alpha"
+**Windows:**
+```bash
+# Run the setup script
+setup.bat
+```
 
-Artifacts and graphs are saved under dataset/<app>/<task>/<timestamp>/
+**Manual setup:**
+```bash
+# Deactivate conda if active
+conda deactivate
+
+# Create and activate venv
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+source .venv/bin/activate  # Mac/Linux
+
+# Install dependencies
+pip install -e .
+playwright install chromium
+```
+
+### 2. Set OpenAI API Key
+
+```bash
+# Windows PowerShell
+$env:OPENAI_API_KEY="sk-your-key-here"
+
+# Mac/Linux
+export OPENAI_API_KEY="sk-your-key-here"
+```
+
+### 3. Record Authentication (One-time)
+
+```bash
+python -m scripts.record_cookies
+```
+
+This opens a browser where you log into Linear. Your session is saved in the `chrome-user/` directory.
+
+### 4. Run the Agent
+
+**Terminal 1 - Start Driver:**
+```bash
+python -m src.drivers.playwright_driver
+```
+
+**Terminal 2 - Run Agent:**
+```bash
+python -m src.agents.graph run linear "create a project in linear named alpha"
+```
+
+The agent will:
+1. Open Linear in Chrome (already logged in)
+2. Use GPT-4o to reason about what to do
+3. Click buttons, type text, scroll as needed
+4. Validate when the goal is achieved
+
+## Architecture
+
+```
+┌─────────────┐
+│   LangGraph │  Orchestrates workflow
+│   Workflow  │  (Observe → Reason → Act → Validate)
+└──────┬──────┘
+       │
+       ├──► Planner (GPT-4o reasoning)
+       ├──► Executor (HTTP client)
+       ├──► Perception (Screenshot capture)
+       └──► State (Pydantic models)
+               │
+               ▼
+       ┌───────────────┐
+       │  Flask Driver │  Wraps Playwright
+       │  (Port 3999)  │  Uses persistent Chrome profile
+       └───────────────┘
+```
+
+## Workflow Nodes
+
+1. **Observe**: Capture DOM, accessibility tree, screenshot
+2. **Reason**: LLM analyzes state and plans next action
+3. **Act**: Execute action (click, type, scroll)
+4. **Validate**: Check if goal is achieved
+5. **Loop**: Continue until done or max steps (50)
+
+## Output
+
+Artifacts saved to `dataset/{app}/{task}/{timestamp}/`:
+- `screens/` - Sequential screenshots
+- `state_graph_linear.png` - State transition graph
+- `state_graph_force.png` - Force-directed state graph
+
+## Configuration
+
+Edit these files to customize:
+- `src/agents/planner.py` - Change LLM model (default: `gpt-4o`)
+- `src/agents/state.py` - Adjust max steps (default: 50)
+- `src/drivers/playwright_driver.py` - Modify browser settings
+
+## Troubleshooting
+
+**"OPENAI_API_KEY not set"**
+- Set the environment variable before running
+
+**Browser stuck at login**
+- Run `python -m scripts.record_cookies` first
+- Check that `chrome-user/` directory exists
+
+**Driver connection failed**
+- Make sure driver is running: `python -m src.drivers.playwright_driver`
+- Check port 3999 is available
+
+## Development
+
+See `setup.md` for detailed setup instructions and `.cursorrules` for Cursor IDE configuration.
 

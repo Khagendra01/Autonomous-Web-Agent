@@ -38,17 +38,39 @@ def init_route():
     data = request.get_json(force=True)
     app_name = data.get('app')
     cookies_path = data.get('cookiesPath')
+    print(f"[DEBUG] Received cookiesPath: {cookies_path}")
+    print(f"[DEBUG] File exists: {os.path.exists(cookies_path) if cookies_path else 'N/A'}")
+    
     if _pw is None:
         _pw = sync_playwright().start()
-        # Launch the system Chrome to satisfy strict OAuth checks
-        _browser = _pw.chromium.launch(channel="chrome", headless=False)
-    _context = _browser.new_context()
-    if cookies_path and os.path.exists(cookies_path):
-        cookies = json.loads(open(cookies_path, 'r', encoding='utf-8').read())
-        _context.add_cookies(cookies)
+    
+    # Use persistent context (same as record_cookies.py) to preserve all browser state
+    from pathlib import Path
+    user_dir = Path('chrome-user')
+    user_dir.mkdir(exist_ok=True)
+    
+    print(f"[DEBUG] Using persistent context with user_data_dir: {user_dir}")
+    _context = _pw.chromium.launch_persistent_context(
+        user_data_dir=str(user_dir),
+        channel="chrome",
+        headless=False,
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--no-first-run",
+            "--no-default-browser-check",
+        ],
+    )
     _page = _context.new_page()
     start_url = 'https://linear.app/' if app_name == 'linear' else 'https://www.notion.so/'
+    
+    print(f"[DEBUG] Navigating to {start_url}...")
     _page.goto(start_url, wait_until='load')
+    _page.wait_for_timeout(1000)
+    
+    print(f"[DEBUG] Final URL: {_page.url}")
+    title = _page.title()
+    print(f"[DEBUG] Page title: {title}")
+    
     return jsonify({ 'ok': True, 'startURL': start_url })
 
 
@@ -64,7 +86,94 @@ def observe_route():
         return btns.find(t => /create|new|filter|add/.test(t)) || '';
       }
     """)
-    return jsonify({ 'url': url, 'a11y': a11y, 'interactables': interactables, 'hint': hint })
+    
+    # Capture error messages, alerts, and validation messages
+    error_messages = _page.evaluate("""
+      () => {
+        const errors = [];
+        
+        // Method 1: Check common error selectors
+        const errorSelectors = [
+          '[role="alert"]',
+          '.error', '.error-message', '.validation-error',
+          '[class*="error" i]', '[class*="Error"]',
+          '[data-error]',
+          '.text-red-500', '.text-red-600', '.text-danger',
+          '.alert', '.alert-danger', '.alert-error',
+          '[aria-invalid="true"]',
+          '.form-error', '.field-error',
+          '[class*="warning" i]',
+          'span[style*="color: rgb(255"]', 'span[style*="color: red"]',
+          'div[style*="color: rgb(255"]', 'div[style*="color: red"]'
+        ];
+        
+        for (const selector of errorSelectors) {
+          try {
+            const elements = document.querySelectorAll(selector);
+            elements.forEach(el => {
+              const text = el.textContent?.trim();
+              if (text && text.length > 0 && text.length < 500) {
+                errors.push(text);
+              }
+            });
+          } catch(e) {}
+        }
+        
+        // Method 2: Look for text near invalid inputs
+        const invalidInputs = document.querySelectorAll('input[aria-invalid="true"], input.error');
+        invalidInputs.forEach(input => {
+          const parent = input.closest('div');
+          if (parent) {
+            // Check siblings and children for error messages
+            const errorTexts = parent.querySelectorAll('span, div, p');
+            errorTexts.forEach(el => {
+              const text = el.textContent?.trim();
+              const style = window.getComputedStyle(el);
+              // Check if text is red or looks like an error
+              if (text && (
+                style.color.includes('255, 0') || 
+                style.color.includes('red') ||
+                text.toLowerCase().includes('already taken') ||
+                text.toLowerCase().includes('invalid') ||
+                text.toLowerCase().includes('required') ||
+                text.toLowerCase().includes('error')
+              )) {
+                errors.push(text);
+              }
+            });
+          }
+        });
+        
+        // Method 3: Search all page text for common error keywords
+        const allText = document.querySelectorAll('span, div, p, label');
+        allText.forEach(el => {
+          const text = el.textContent?.trim();
+          const style = window.getComputedStyle(el);
+          // Check for red colored text with error keywords
+          if (text && text.length < 500 && text.length > 5 &&
+              (style.color.includes('255, 0') || style.color.includes('rgb(255') || style.color.includes('red')) &&
+              (text.toLowerCase().includes('taken') || 
+               text.toLowerCase().includes('already exists') ||
+               text.toLowerCase().includes('invalid') ||
+               text.toLowerCase().includes('error') ||
+               text.toLowerCase().includes('failed'))) {
+            errors.push(text);
+          }
+        });
+        
+        // Remove duplicates and filter out empty/too long messages
+        const unique = [...new Set(errors)].filter(e => e.length > 0 && e.length < 500);
+        return unique;
+      }
+    """)
+    
+    return jsonify({ 
+        'url': url, 
+        'a11y': a11y, 
+        'interactables': interactables, 
+        'hint': hint,
+        'errors': error_messages
+    })
 
 
 @app.get('/screenshot')
@@ -96,7 +205,7 @@ def act_route():
 
 
 def main():
-    app.run(host='127.0.0.1', port=3999)
+    app.run(host='127.0.0.1', port=3999, threaded=False)
 
 
 if __name__ == '__main__':

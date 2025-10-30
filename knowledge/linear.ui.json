@@ -1,0 +1,21 @@
+{
+  "app": "linear",
+  "interactables": [
+    {
+      "label": "Create account",
+      "role": "button",
+      "selector": "role=button[name=\"Create account\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Create workspace",
+      "role": "button",
+      "selector": "role=button[name=\"Create workspace\"]",
+      "semantic": [
+        "create"
+      ]
+    }
+  ]
+}
