@@ -88,6 +88,58 @@ What app and URL should be used for this goal?"""
                 'reasoning': f'Error: {e}'
             }
 
+    def _score_button_relevance(self, button_label: str, button_role: str, goal: str) -> int:
+        """Score how relevant a button is to the current goal."""
+        if not button_label:
+            return 0
+        
+        label_lower = button_label.lower()
+        goal_lower = goal.lower()
+        score = 0
+        
+        # Extract key action words from goal
+        action_words = []
+        if any(word in goal_lower for word in ['create', 'new', 'add', 'make']):
+            action_words.extend(['create', 'new', 'add', '+', 'plus'])
+        if 'delete' in goal_lower or 'remove' in goal_lower:
+            action_words.extend(['delete', 'remove', 'trash'])
+        if 'edit' in goal_lower or 'update' in goal_lower:
+            action_words.extend(['edit', 'update', 'modify'])
+        if 'search' in goal_lower or 'find' in goal_lower:
+            action_words.extend(['search', 'find'])
+        
+        # Extract key object words from goal
+        object_words = []
+        if 'project' in goal_lower:
+            object_words.append('project')
+        if 'issue' in goal_lower or 'ticket' in goal_lower:
+            object_words.extend(['issue', 'ticket'])
+        if 'task' in goal_lower:
+            object_words.append('task')
+        
+        # Score based on action words
+        for word in action_words:
+            if word in label_lower:
+                score += 10
+        
+        # Score based on object words
+        for word in object_words:
+            if word in label_lower:
+                score += 10
+        
+        # Boost score for button role
+        if button_role == 'button':
+            score += 2
+        
+        # Boost for exact phrase matches
+        if action_words and object_words:
+            for action in action_words:
+                for obj in object_words:
+                    if action in label_lower and obj in label_lower:
+                        score += 15  # Big boost for having both
+        
+        return score
+    
     def reason_and_plan(self, state: AgentState) -> AgentState:
         """Use LLM to reason about current state and plan next action."""
         obs = state.observation or {}
@@ -152,15 +204,48 @@ What app and URL should be used for this goal?"""
                 for item in relevant_knowledge[:5]
             ])
         
+        # Score and sort interactables by relevance to goal
+        scored_interactables = []
+        for act in interactables:
+            label = act.get('label', '')
+            role = act.get('role', 'unknown')
+            score = self._score_button_relevance(label, role, state.goal)
+            scored_interactables.append((score, act))
+        
+        # Sort by score (descending)
+        scored_interactables.sort(key=lambda x: x[0], reverse=True)
+        
         # Format interactables for LLM - show more if stuck in loop
         max_interactables = 50 if state.same_url_action_count >= 3 else 30
-        interactables_text = "\n".join([
-            f"- {i+1}. {act.get('role', 'unknown')} - \"{act.get('label', 'no label')}\" (selector: {act.get('selector', 'N/A')})"
-            for i, act in enumerate(interactables[:max_interactables])
-        ])
         
-        if len(interactables) > max_interactables:
-            interactables_text += f"\n... and {len(interactables) - max_interactables} more elements"
+        # Separate high-priority and normal elements
+        high_priority = [item for item in scored_interactables if item[0] > 15]
+        normal_priority = [item for item in scored_interactables if item[0] <= 15]
+        
+        interactables_text = ""
+        
+        # Show high-priority buttons first with highlighting
+        if high_priority:
+            interactables_text += "🎯 HIGHLY RELEVANT BUTTONS (these likely match your goal):\n"
+            for i, (score, act) in enumerate(high_priority[:10]):
+                label = act.get('label', 'no label')
+                role = act.get('role', 'unknown')
+                selector = act.get('selector', 'N/A')
+                interactables_text += f"⭐ {i+1}. {role} - \"{label}\" (selector: {selector})\n"
+            interactables_text += "\n"
+        
+        # Show normal priority buttons
+        if normal_priority:
+            interactables_text += "Other available elements:\n"
+            for i, (score, act) in enumerate(normal_priority[:max_interactables - len(high_priority)]):
+                label = act.get('label', 'no label')
+                role = act.get('role', 'unknown')
+                selector = act.get('selector', 'N/A')
+                interactables_text += f"- {i+1}. {role} - \"{label}\" (selector: {selector})\n"
+        
+        remaining = len(interactables) - len(high_priority) - min(len(normal_priority), max_interactables - len(high_priority))
+        if remaining > 0:
+            interactables_text += f"\n... and {remaining} more elements"
         
         # Format errors
         errors_text = "\n".join([f"- {err}" for err in errors]) if errors else "None"
@@ -211,12 +296,13 @@ IMPORTANT: If you see error messages or validation failures, you MUST adapt your
 - Learn from errors and don't repeat the same failing action
 - After 2-3 failures, STOP trying the same thing and look for alternative paths
 
-BUTTON LABEL MATCHING:c.bat "patch"
-
-- Button labels often vary: "Create Project", "Create new project", "New Project", "+ Project" are all the same!
-- Look for semantic matches, not just exact text matches
-- If looking for "create", also consider buttons with "new", "add", or "+" symbols
-- Pay attention to ALL interactive elements in the list
+BUTTON SELECTION STRATEGY:
+- I will show you "🎯 HIGHLY RELEVANT BUTTONS" that match your goal - PRIORITIZE THESE FIRST
+- These buttons are pre-filtered and scored based on semantic relevance
+- If you see a ⭐ starred button that matches your intent, USE IT
+- Button labels vary but mean the same: "Create Project" = "Create new project" = "New Project" = "+ Project"
+- Don't waste time on unrelated buttons when high-priority options are available
+- Icon buttons (with emojis/symbols) are just as valid as text buttons
 
 You can perform these actions:
 - click: Click on an element (requires selector)
@@ -253,7 +339,7 @@ Available interactive elements on the page:
 {interactables_text if interactables_text else "No clear interactive elements found"}
 
 What should I do next to achieve the goal? If there are errors or loops, adapt your approach accordingly. 
-IMPORTANT: Look carefully at ALL available elements, especially those with 'create', 'new', 'add', or '+' in their labels!"""
+CRITICAL: If you see 🎯 HIGHLY RELEVANT BUTTONS above, choose from those FIRST - they are pre-filtered to match your goal!"""
 
         messages = [
             SystemMessage(content=system_prompt),

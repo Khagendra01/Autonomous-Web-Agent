@@ -1,3 +1,6 @@
-2025/10/30-09:06:34.578 1cfc Reusing MANIFEST C:\Users\Khage\Desktop\Autonomous-Web-Agent\chrome-user\Default\Local Storage\leveldb/MANIFEST-000001
-2025/10/30-09:06:34.582 1cfc Recovering log #3
-2025/10/30-09:06:34.584 1cfc Reusing old log C:\Users\Khage\Desktop\Autonomous-Web-Agent\chrome-user\Default\Local Storage\leveldb/000003.log 
+2025/10/30-09:10:00.717 55ac Reusing MANIFEST C:\Users\Khage\Desktop\Autonomous-Web-Agent\chrome-user\Default\Local Storage\leveldb/MANIFEST-000001
+2025/10/30-09:10:00.721 55ac Recovering log #3
+2025/10/30-09:10:00.724 55ac Reusing old log C:\Users\Khage\Desktop\Autonomous-Web-Agent\chrome-user\Default\Local Storage\leveldb/000003.log 
+2025/10/30-09:12:16.913 2f68 Level-0 table #5: started
+2025/10/30-09:12:16.917 2f68 Level-0 table #5: 137439 bytes OK
+2025/10/30-09:12:16.919 2f68 Delete type=0 #3

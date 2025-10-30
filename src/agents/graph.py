@@ -86,6 +86,21 @@ def reason_node(state: AgentState) -> AgentState:
     if relevant_knowledge:
         print(f"  💡 Using {len(relevant_knowledge)} learned UI pattern(s)")
     
+    # Quick check for high-priority buttons
+    interactables = state.observation.get('interactables', [])
+    high_priority_count = 0
+    for act in interactables:
+        score = planner._score_button_relevance(
+            act.get('label', ''), 
+            act.get('role', ''), 
+            state.goal
+        )
+        if score > 15:
+            high_priority_count += 1
+    
+    if high_priority_count > 0:
+        print(f"  🎯 Found {high_priority_count} highly relevant button(s) - LLM will see these first!")
+    
     state = planner.reason_and_plan(state)
     
     print(f"  Reasoning: {state.reasoning[:150]}..." if len(state.reasoning or '') > 150 else f"  Reasoning: {state.reasoning}")
