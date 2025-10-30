@@ -59,78 +59,83 @@ Respond in JSON: {{"app": "app_name", "url": "https://..."}}"""
             return {'app': 'unknown', 'url': 'https://www.google.com'}
     
     def plan_next_action(self, state: AgentState) -> AgentState:
-        """Simple planning - just ask LLM what to do next."""
+        """Simple planning - just give LLM complete context and let it think."""
         obs = state.observation or {}
         interactables = obs.get('interactables', [])
         
-        # ⚡ IMPROVEMENT 1: Prioritize "create" buttons and show more elements (up to 100)
-        priority_elements = []
-        regular_elements = []
-        
+        # Group elements by type for clear structure
+        by_type = {}
         for item in interactables:
-            label = (item.get('label') or '').lower()
-            if any(word in label for word in ['create', 'new', 'add', '+']) or label == '+':
-                priority_elements.append(item)
-            else:
-                regular_elements.append(item)
+            role = item.get('role', 'unknown')
+            if role not in by_type:
+                by_type[role] = []
+            by_type[role].append(item)
         
-        # Show priority elements first, then regular, up to 100 total
-        ordered_elements = priority_elements + regular_elements
-        display_elements = ordered_elements[:100]
+        # Format elements grouped by type (show up to 100)
+        elements_parts = []
+        total_shown = 0
         
-        elements_text = "\n".join([
-            f"{i+1}. {item.get('role')} - \"{item.get('label', 'no label')}\" (selector: {item.get('selector')})"
-            for i, item in enumerate(display_elements)
-        ])
+        # Show in logical order: textboxes, buttons, links, others
+        priority_order = ['textbox', 'combobox', 'button', 'link', 'menuitem', 'checkbox', 'radio']
+        
+        for role in priority_order:
+            if role in by_type and total_shown < 100:
+                items = by_type[role][:100 - total_shown]
+                elements_parts.append(f"\n{role.upper()}S ({len(items)}):")
+                for item in items:
+                    total_shown += 1
+                    label = item.get('label', 'no label')
+                    elements_parts.append(f"  [{total_shown}] \"{label}\" → {item.get('selector')}")
+        
+        # Add remaining types
+        for role, items in by_type.items():
+            if role not in priority_order and total_shown < 100:
+                items_to_show = items[:100 - total_shown]
+                elements_parts.append(f"\n{role.upper()}S ({len(items)}):")
+                for item in items_to_show:
+                    total_shown += 1
+                    label = item.get('label', 'no label')
+                    elements_parts.append(f"  [{total_shown}] \"{label}\" → {item.get('selector')}")
+        
+        elements_text = "\n".join(elements_parts)
         
         if len(interactables) > 100:
-            elements_text += f"\n... and {len(interactables) - 100} more elements"
+            elements_text += f"\n\n(+{len(interactables) - 100} more elements not shown)"
         
-        # ⚡ IMPROVEMENT 2: Detect infinite loops
-        loop_warning = ""
-        recent_actions = state.action_history[-5:] if len(state.action_history) >= 5 else []
+        # Build context from last few actions
+        recent_context = ""
+        if len(state.action_history) >= 3:
+            recent_context = f"\nLast 3 actions: {', '.join(state.action_history[-3:])}"
+            # Check for loops
+            if state.action_history[-1] == state.action_history[-2] == state.action_history[-3]:
+                recent_context += "\n⚠️ You're repeating the same action - try something different!"
         
-        if len(recent_actions) >= 3:
-            # Check if last 3 actions are identical
-            if recent_actions[-1] == recent_actions[-2] == recent_actions[-3]:
-                loop_warning = f"\n\n⚠️ LOOP DETECTED: You've repeated '{recent_actions[-1]}' 3+ times with no progress!\nTry a COMPLETELY DIFFERENT action - scroll to find new elements, or try a different button."
-        
-        # ⚡ IMPROVEMENT 3: Provide action result feedback
-        action_result = ""
         if state.last_action_result:
-            action_result = f"\nLAST ACTION RESULT: {state.last_action_result}"
+            recent_context += f"\nLast result: {state.last_action_result}"
         
-        # Simple prompt - let LLM figure everything out
-        prompt = f"""You are a web automation agent.
+        # Minimal, clear prompt - let GPT-4o reason
+        prompt = f"""You are automating: {state.goal}
 
-GOAL: {state.goal}
-CURRENT URL: {state.current_url}
-STEP: {state.step_count}/{state.max_steps}
+Current page: {state.current_url}
+Step: {state.step_count}/{state.max_steps}
 
-AVAILABLE ELEMENTS ({len(display_elements)} shown, priority buttons listed first):
-{elements_text if elements_text else "No elements found"}
+AVAILABLE ELEMENTS:{elements_text}
+{recent_context}
 
-LAST ACTION: {state.last_action or 'None'}{action_result}{loop_warning}
+Actions:
+- click: Click a button/link (use exact selector)
+- type: Type into a textbox (use exact selector + text from goal)
+- scroll: Scroll to see more (delta: pixels)
 
-What should you do next? Choose from:
-- click: Click an element (provide exact selector from list)
-- type: Type text into an input (provide selector and text)
-- scroll: Scroll the page to reveal more elements
-
-IMPORTANT:
-- If you see a loop warning, you MUST try something different (scroll or different button)
-- Only use selectors EXACTLY as shown in the list above
-- "Create" and "New" buttons are shown first to help you find them quickly
+Think about:
+1. What step of the workflow am I in? (navigation, form filling, submission)
+2. What elements are relevant to my goal?
+3. If textboxes exist, do I need to fill them before clicking submit?
 
 Respond in JSON:
 {{
-  "reasoning": "why you chose this action",
-  "action": {{
-    "type": "click|type|scroll",
-    "selector": "exact selector from list above",
-    "text": "text to type (if type action)",
-    "delta": 700
-  }}
+  "reasoning": "analyze current state and plan",
+  "action": {{"type": "click|type|scroll", "selector": "exact selector", "text": "if typing", "delta": 700}}
 }}"""
 
         try:

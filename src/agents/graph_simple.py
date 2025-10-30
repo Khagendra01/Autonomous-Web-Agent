@@ -47,13 +47,17 @@ def observe_node(state: AgentState) -> AgentState:
     print(f"  URL: {state.current_url}")
     print(f"  Elements: {len(obs.get('interactables', []))}")
     
-    # ⚡ Show priority buttons found
+    # ⚡ Show priority buttons and form state
     interactables = obs.get('interactables', [])
     priority_count = sum(1 for item in interactables 
                         if any(word in (item.get('label') or '').lower() 
                                for word in ['create', 'new', 'add', '+']))
+    textbox_count = sum(1 for item in interactables if item.get('role') == 'textbox')
+    
     if priority_count > 0:
         print(f"  🎯 Found {priority_count} create/new/add button(s)")
+    if textbox_count > 0:
+        print(f"  📝 Found {textbox_count} input field(s) - FORM STATE")
     
     return state
 
