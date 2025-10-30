@@ -56,6 +56,11 @@ def reason_node(state: AgentState) -> AgentState:
     if errors:
         print(f"  ⚠️  LLM will see {len(errors)} error(s)")
     
+    # Warn about repeated failures
+    if state.consecutive_failures >= 2:
+        print(f"  🚨 REPEATED FAILURES DETECTED: {state.consecutive_failures} consecutive '{state.failed_action_type}' failures")
+        print(f"  🔄 LLM will be instructed to try alternative approaches")
+    
     # Check if we have relevant knowledge
     from .knowledge import UIKB
     kb = UIKB(state.app)
@@ -85,9 +90,12 @@ def act_node(state: AgentState) -> AgentState:
         print("  Warning: No action planned, scrolling by default")
         action = {'type': 'scroll', 'delta': 700, 'intent': 'explore'}
     
+    # Extract action info before try block so it's available in except
+    action_desc = f"{action.get('type')}:{action.get('intent', 'unknown')}"
+    action_type = action.get('type', 'unknown')
+    
     try:
         result = executor.act(action)
-        action_desc = f"{action.get('type')}:{action.get('intent', 'unknown')}"
         state.last_action = action_desc
         state.action_history.append(action_desc)
         state.step_count += 1
@@ -95,14 +103,30 @@ def act_node(state: AgentState) -> AgentState:
         # Track action result
         if result.get('ok'):
             state.last_action_result = "Success"
+            state.consecutive_failures = 0  # Reset on success
+            state.failed_action_type = None
             print(f"  ✓ Executed: {action_desc}")
         else:
             state.last_action_result = f"Failed: {result.get('error', 'Unknown error')}"
+            # Track consecutive failures
+            if state.failed_action_type == action_type:
+                state.consecutive_failures += 1
+            else:
+                state.consecutive_failures = 1
+                state.failed_action_type = action_type
             print(f"  ✗ Action failed: {result.get('error', 'Unknown error')}")
+            print(f"  ⚠️  Consecutive failures: {state.consecutive_failures}")
     except Exception as e:
         print(f"  ✗ Action failed: {e}")
         state.failure_reason = str(e)
         state.last_action_result = f"Exception: {str(e)}"
+        # Track consecutive failures for exceptions too
+        if state.failed_action_type == action_type:
+            state.consecutive_failures += 1
+        else:
+            state.consecutive_failures = 1
+            state.failed_action_type = action_type
+        print(f"  ⚠️  Consecutive failures: {state.consecutive_failures}")
     
     return state
 

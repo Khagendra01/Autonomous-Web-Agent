@@ -58,6 +58,8 @@ class AgentState(BaseModel):
     last_action: Optional[str] = None
     last_action_result: Optional[str] = None  # Result of last action (success/error)
     action_history: List[str] = []
+    consecutive_failures: int = 0  # Track consecutive failed actions
+    failed_action_type: Optional[str] = None  # Type of action that's failing
     step_count: int = 0
     max_steps: int = 50
     

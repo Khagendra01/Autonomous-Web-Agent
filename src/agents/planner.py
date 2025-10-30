@@ -161,6 +161,21 @@ What app and URL should be used for this goal?"""
         # Format errors
         errors_text = "\n".join([f"- {err}" for err in errors]) if errors else "None"
         
+        # Detect repeated failures and add strong warning
+        failure_warning = ""
+        if state.consecutive_failures >= 2:
+            failure_warning = f"""
+⚠️ CRITICAL: You have failed {state.consecutive_failures} times in a row with '{state.failed_action_type}' actions!
+DO NOT REPEAT THE SAME ACTION. You MUST try a completely different approach:
+- Look for alternative buttons/elements on the page
+- Try scrolling to reveal more options
+- Use different interactive elements that you haven't tried yet
+- If there's a "skip" or "later" button, consider using it
+- Think outside the box and try a different strategy
+
+Available elements you haven't tried yet might include skip buttons, alternative navigation, or other UI controls.
+"""
+        
         system_prompt = """You are a web automation agent. Your job is to:
 1. Analyze the current state of the webpage
 2. Reason about what needs to be done to achieve the goal
@@ -170,6 +185,7 @@ IMPORTANT: If you see error messages or validation failures, you MUST adapt your
 - If a name/URL is already taken, try a different one (add suffix, use timestamp, etc.)
 - If an action failed, try a different approach
 - Learn from errors and don't repeat the same failing action
+- After 2-3 failures, STOP trying the same thing and look for alternative paths
 
 You can perform these actions:
 - click: Click on an element (requires selector)
@@ -197,7 +213,7 @@ Last action: {state.last_action or 'None'}
 Last action result: {state.last_action_result or 'Unknown'}
 
 Recent actions: {', '.join(state.action_history[-5:]) if state.action_history else 'None yet'}
-
+{failure_warning}
 ERROR MESSAGES on page:
 {errors_text}
 {knowledge_hints}

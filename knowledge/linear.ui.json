@@ -25,6 +25,87 @@
         "create",
         "edit"
       ]
+    },
+    {
+      "label": "Search workspace",
+      "role": "button",
+      "selector": "role=button[name=\"Search workspace\"]",
+      "semantic": [
+        "search"
+      ]
+    },
+    {
+      "label": "Create new issue",
+      "role": "button",
+      "selector": "role=button[name=\"Create new issue\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add new view",
+      "role": "button",
+      "selector": "role=button[name=\"Add new view\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add filter",
+      "role": "button",
+      "selector": "role=button[name=\"Add filter\"]",
+      "semantic": [
+        "create",
+        "filter"
+      ]
+    },
+    {
+      "label": "Select issue No Priority ALP-2 Set up your teams (2) Created Oct 30, 8:33:38 AM",
+      "role": "link",
+      "selector": "role=link[name=\"Select issue No Priority ALP-2 Set up your teams (2) Created Oct 30, 8:33:38 AM\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Select issue No Priority ALP-3 Connect your tools (3) Created Oct 30, 8:33:38 AM",
+      "role": "link",
+      "selector": "role=link[name=\"Select issue No Priority ALP-3 Connect your tools (3) Created Oct 30, 8:33:38 AM\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Select issue No Priority ALP-1 Get familiar with Linear (1) Created Oct 30, 8:33:38 AM",
+      "role": "link",
+      "selector": "role=link[name=\"Select issue No Priority ALP-1 Get familiar with Linear (1) Created Oct 30, 8:33:38 AM\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Select issue No Priority ALP-4 Import your data (4) Created Oct 30, 8:33:38 AM",
+      "role": "link",
+      "selector": "role=link[name=\"Select issue No Priority ALP-4 Import your data (4) Created Oct 30, 8:33:38 AM\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Add project",
+      "role": "button",
+      "selector": "role=button[name=\"Add project\"]",
+      "semantic": [
+        "create"
+      ]
+    },
+    {
+      "label": "Create new project",
+      "role": "button",
+      "selector": "role=button[name=\"Create new project\"]",
+      "semantic": [
+        "create"
+      ]
     }
   ]
 }
