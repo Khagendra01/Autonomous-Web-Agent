@@ -51,10 +51,13 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
 **Complete Action History** (chronological order):
 {json.dumps(action_details, indent=2)}
 
-EVALUATION STRATEGY:
-Analyze the action sequence to determine if the goal is COMPLETE. **DEFAULT TO COMPLETION** when the action patterns match standard workflows and there are no errors.
+**Currently Available UI Elements** (for detecting pending submit/confirm steps):
+{json.dumps(state.get('interactable_elements', []), indent=2)}
 
-**BIAS TOWARD COMPLETION**: If you see a logical sequence of actions that would complete the goal in a typical user workflow, and there are NO errors reported, assume the task is DONE. Web apps often update asynchronously, so the absence of errors after completing standard steps indicates success.
+EVALUATION STRATEGY:
+Analyze the action sequence to determine if the goal is COMPLETE. Default to completion only when the action patterns match standard workflows and there are no obvious pending submission steps.
+
+Be pragmatic but careful: If a clear submission/confirmation button (e.g., "Send", "Invite", "Submit", "Save", "Create", "Confirm") is visible in the Currently Available UI Elements, the workflow is NOT complete until that button is clicked.
 
 1. **COMMENTING GOALS** (e.g., "post a comment", "comment hi on video"):
    - Look for: type action into comment box + click "Comment"/"Post" button
@@ -94,15 +97,16 @@ Analyze the action sequence to determine if the goal is COMPLETE. **DEFAULT TO C
    - Example: clicked "Daily Journal", clicked "Delete", clicked "Confirm" → **SUCCESS**
 
 7. **ASSIGNMENT/INVITE GOALS** (e.g., "assign to X", "invite user Y"):
-   - Look for: clicked assignee field + typed/selected user + (optional: clicked save)
-   - ✓ Success pattern: opened assignment field + selected user WITHOUT errors → **GOAL IS REACHED**
-   - Example: clicked "Assignee", typed "kgen", selected user → **SUCCESS**
+   - Look for: clicked assignee/invite field + typed/selected user/email + clicked submission if present
+   - ✓ Success pattern: selection made AND if a submission control like "Send", "Invite", "Add", or "Confirm" is visible, it must be clicked
+   - If a small suggestion popup was clicked (e.g., "Invite: <email>") but a "Send" or equivalent button is still available, the task is NOT yet complete
+   - Example: clicked "Invite teammates", typed email, selected suggestion, clicked "Send" → **SUCCESS**
 
 8. **GENERAL COMPLETION RULES** (MOST IMPORTANT):
-   - ✓ If the LAST ACTION has a HIGH SCORE (≥8.0) and represents a completion step (Submit, Save, Create, Delete, Confirm, etc.), and there are NO errors → **GOAL IS REACHED** (confidence: 0.95)
-   - ✓ If all required data from the goal appears in type actions, and there are NO errors → **GOAL IS REACHED** (confidence: 0.9)
-   - ✓ If the action sequence follows a standard workflow for the goal type, and there are NO errors → **GOAL IS REACHED** (confidence: 0.85)
-   - ✗ Only mark incomplete if: critical steps are clearly missing OR there are validation errors
+   - ✓ If the LAST ACTION has a HIGH SCORE (≥8.0) and represents a completion step (Submit, Save, Create, Delete, Confirm, Send/Invite), and there are NO errors → **GOAL IS REACHED** (confidence: 0.95)
+   - ✓ If all required data from the goal appears in type actions, and there are NO errors, and there is NO visible submission/confirmation control remaining → **GOAL IS REACHED** (confidence: 0.9)
+   - ✓ If the action sequence follows a standard workflow for the goal type, and there are NO errors, and there is NO visible submission/confirmation control remaining → **GOAL IS REACHED** (confidence: 0.85)
+   - ✗ Mark incomplete when: a likely submission/confirmation control is visible (e.g., "Send", "Invite", "Submit", "Save", "Create", "Confirm") OR critical steps are missing OR there are validation errors
 
 9. **CONFIDENCE LEVELS** (be optimistic):
    - 0.9-1.0: Standard workflow completed without errors (USE THIS MOST OF THE TIME)
