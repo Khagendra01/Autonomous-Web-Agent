@@ -146,7 +146,8 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     
     prompt = f"""You are helping navigate a web application to achieve a goal.
 
-**Goal**: {state['goal']}
+**Goal (normalized)**: {state['goal']}
+**Full instruction (verbatim)**: {state.get('instruction', '')}
 **Current URL**: {state['current_url']}
 **App**: {state['app_name']}
 
@@ -212,11 +213,11 @@ SCORING STRATEGY (why buttons/elements matter):
    - If an action was already tried without progress, reduce its score
 
 8. **EXTRACT GOAL DATA COMPLETELY**:
-   - Parse goal for ALL text/data that needs to be entered
+   - Parse BOTH the normalized goal and the full instruction for ALL text/data that needs to be entered
    - Example: "create page called Daily Note and write Softlight Engineering Assignment"
      * Title to type: "Daily Note"
      * Content to type: "Softlight Engineering Assignment"
-   - Propose type actions with the EXACT text from the goal
+   - Propose type actions with the EXACT text from the full instruction when present
 
 Return a JSON array with this structure:
 [
@@ -381,7 +382,8 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
 
     prompt = f"""You are an autonomous web agent decision policy. Choose the next UI action from candidates.
 
-Goal: {state['goal']}
+Goal (normalized): {state['goal']}
+Full instruction (verbatim): {state.get('instruction', '')}
 Current URL: {state['current_url']}
 Errors/Validation: {json.dumps(errors)}
 Recent actions (last 5): {json.dumps(recent)}
@@ -635,7 +637,8 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
     
     prompt = f"""Evaluate whether the goal has been achieved based on the complete action history and current state.
 
-**Goal**: {state['goal']}
+**Goal (normalized)**: {state['goal']}
+**Full instruction (verbatim)**: {state.get('instruction', '')}
 **Current URL**: {state['current_url']}
 **Steps Taken**: {state['step_count']}
 **App**: {state.get('app_name', 'Unknown')}
