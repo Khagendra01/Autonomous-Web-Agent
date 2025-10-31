@@ -58,7 +58,7 @@ def _dismiss_overlays(page: Page) -> None:
 		pass
 
 
-def _robust_click(page: Page, selector: str) -> None:
+def _robust_click(ctx, selector: str) -> None:
     """Attempt a robust click with fallbacks if intercepted by overlays.
 
     Special handling: when targeting ARIA option/menuitem entries, ensure the
@@ -72,38 +72,38 @@ def _robust_click(page: Page, selector: str) -> None:
 
         # Ensure a popup container is visible; try to open if needed
         try:
-            container = page.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first
+            container = ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first
             if container.count() == 0 or not container.is_visible():
                 # Try to open an active combobox if present
                 try:
-                    combo = page.locator('[role="combobox"]').filter(has=page.locator('[aria-expanded="false"]')).first
+                    combo = ctx.locator('[role="combobox"]').filter(has=ctx.locator('[aria-expanded="false"]')).first
                     if combo and (combo.count() > 0):
                         combo.click(timeout=800)
                 except Exception:
                     pass
                 # Try common keyboard openers
                 try:
-                    page.keyboard.press('Alt+ArrowDown')
+                    (ctx.page.keyboard if hasattr(ctx, 'page') else ctx.keyboard).press('Alt+ArrowDown')
                 except Exception:
                     pass
                 page.wait_for_timeout(200)
             # Wait for any container to be visible
-            page.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first.wait_for(state='visible', timeout=8000)
+            ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first.wait_for(state='visible', timeout=8000)
         except Exception:
             pass
 
         # Attempt exact, then partial, then regex case-insensitive matches
         candidates = [
-            page.get_by_role('option', name=desired_label).first,
-            page.get_by_role('menuitem', name=desired_label).first,
-            page.locator('[role="option"]', has_text=desired_label).first,
-            page.locator('[role="menuitem"]', has_text=desired_label).first,
+            ctx.get_by_role('option', name=desired_label).first,
+            ctx.get_by_role('menuitem', name=desired_label).first,
+            ctx.locator('[role="option"]', has_text=desired_label).first,
+            ctx.locator('[role="menuitem"]', has_text=desired_label).first,
         ]
         try:
             regex = re.compile(re.escape(desired_label), re.IGNORECASE)
             candidates.extend([
-                page.locator('[role="option"]').filter(has_text=regex).first,
-                page.locator('[role="menuitem"]').filter(has_text=regex).first,
+                ctx.locator('[role="option"]').filter(has_text=regex).first,
+                ctx.locator('[role="menuitem"]').filter(has_text=regex).first,
             ])
         except Exception:
             pass
@@ -119,7 +119,7 @@ def _robust_click(page: Page, selector: str) -> None:
                         pass
                     cand.wait_for(state='visible', timeout=8000)
                     cand.click(timeout=5000)
-                    page.wait_for_timeout(200)
+                    (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(200)
                     clicked = True
                     break
             except Exception:
@@ -128,20 +128,20 @@ def _robust_click(page: Page, selector: str) -> None:
         if not clicked and desired_label:
             # Try to filter options by typing the desired label
             try:
-                active = page.locator('[role="combobox"][aria-expanded="true"], input[role="combobox"], input[aria-autocomplete]')
+                active = ctx.locator('[role="combobox"][aria-expanded="true"], input[role="combobox"], input[aria-autocomplete]')
                 el = active.first if active.count() > 0 else None
                 if el:
                     try:
                         el.fill(desired_label)
                     except Exception:
                         el.click(timeout=800)
-                        page.keyboard.type(desired_label)
-                    page.wait_for_timeout(300)
+                        (ctx.page.keyboard if hasattr(ctx, 'page') else ctx.keyboard).type(desired_label)
+                    (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(300)
                     # Retry selecting the first matching option
-                    opt = page.locator('[role="option"]').filter(has_text=re.compile(re.escape(desired_label), re.IGNORECASE)).first
+                    opt = ctx.locator('[role="option"]').filter(has_text=re.compile(re.escape(desired_label), re.IGNORECASE)).first
                     opt.wait_for(state='visible', timeout=5000)
                     opt.click(timeout=3000)
-                    page.wait_for_timeout(200)
+                    (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(200)
                     clicked = True
             except Exception:
                 pass
@@ -151,13 +151,13 @@ def _robust_click(page: Page, selector: str) -> None:
             try:
                 pattern = re.compile(re.escape(desired_label), re.IGNORECASE) if desired_label else None
                 if pattern:
-                    page.locator('[role="button"], [aria-label], [role], button, a, span, div, input').filter(has_text=pattern).first.wait_for(state='visible', timeout=2000)
+                    ctx.locator('[role="button"], [aria-label], [role], button, a, span, div, input').filter(has_text=pattern).first.wait_for(state='visible', timeout=2000)
             except Exception:
                 pass
             return
         # Fall through to generic path if above failed
 
-    locator = page.locator(selector).first
+    locator = ctx.locator(selector).first
     locator.wait_for(state='visible', timeout=10000)
     try:
         try:
@@ -165,31 +165,31 @@ def _robust_click(page: Page, selector: str) -> None:
         except Exception:
             pass
         locator.click(timeout=12000)
-        page.wait_for_timeout(200)
+        (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(200)
         return
     except Exception as e:
         message = str(e)
         # If pointer events are intercepted or similar, try fallbacks
         if 'intercepts pointer events' in message or 'element receives pointer-events' in message or 'Timeout' in message:
             # 1) Dismiss overlays and retry normal click
-            _dismiss_overlays(page)
+            _dismiss_overlays(ctx.page if hasattr(ctx, 'page') else ctx)
             try:
                 locator.click(timeout=3000)
-                page.wait_for_timeout(150)
+                (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(150)
                 return
             except Exception:
                 pass
             # 2) Force click (may bypass hit testing)
             try:
                 locator.click(force=True, timeout=2000)
-                page.wait_for_timeout(150)
+                (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(150)
                 return
             except Exception:
                 pass
             # 3) JS click
             try:
-                page.evaluate("el => el.click()", locator.element_handle(timeout=2000))
-                page.wait_for_timeout(150)
+                ctx.evaluate("el => el.click()", locator.element_handle(timeout=2000))
+                (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(150)
                 return
             except Exception:
                 pass
@@ -199,10 +199,11 @@ def _robust_click(page: Page, selector: str) -> None:
                 if box:
                     x = box['x'] + box['width'] / 2
                     y = box['y'] + box['height'] / 2
-                    page.mouse.move(x, y)
-                    page.mouse.down()
-                    page.mouse.up()
-                    page.wait_for_timeout(150)
+                    pg = (ctx.page if hasattr(ctx, 'page') else ctx)
+                    pg.mouse.move(x, y)
+                    pg.mouse.down()
+                    pg.mouse.up()
+                    pg.wait_for_timeout(150)
                     return
             except Exception:
                 pass
@@ -214,15 +215,30 @@ def _robust_click(page: Page, selector: str) -> None:
 def _robust_type(page: Page, selector: str, text: str) -> None:
 	loc = page.locator(selector).first
 	loc.wait_for(state='visible', timeout=5000)
+	
+	# Notion-specific handling: clear existing content first for contenteditable
+	# Check if this looks like Notion (has notion-specific classes or attributes)
+	is_notion = 'notion' in page.url.lower() or page.locator('[data-content-root="true"]').count() > 0
+	
 	# Try direct fill first
 	try:
 		loc.fill(str(text))
 		page.wait_for_timeout(200)
-		return
+		# Verify text was actually set (for input/textarea elements)
+		try:
+			is_input = loc.evaluate('el => el.tagName === "INPUT" || el.tagName === "TEXTAREA"')
+			if is_input:
+				current_value = loc.input_value()
+			else:
+				current_value = loc.inner_text()
+			if str(text).strip() in str(current_value).strip():
+				return
+		except Exception:
+			pass
 	except Exception:
 		pass
 
-	# Click to focus/expand (e.g., YouTube comment box)
+	# Click to focus/expand (e.g., YouTube comment box, Notion editor)
 	try:
 		loc.click(timeout=1500)
 		page.wait_for_timeout(150)
@@ -233,29 +249,104 @@ def _robust_type(page: Page, selector: str, text: str) -> None:
 		except Exception:
 			pass
 
-	# Prefer a visible contenteditable textbox (YouTube uses this)
+	# For Notion: find the contenteditable within the selected element
+	if is_notion:
+		try:
+			# Notion title editor: usually a div with contenteditable="true" inside the selector
+			editable_in_loc = loc.locator('[contenteditable="true"]').first
+			if editable_in_loc.count() > 0:
+				editable_in_loc.wait_for(state='visible', timeout=3000)
+				# Clear existing content for Notion
+				try:
+					editable_in_loc.select_text()
+					page.wait_for_timeout(100)
+				except Exception:
+					pass
+				editable_in_loc.fill(str(text))
+				page.wait_for_timeout(300)
+				# Verify by checking inner text
+				if str(text).strip().lower() in editable_in_loc.inner_text().lower():
+					return
+		except Exception:
+			pass
+
+	# Prefer a visible contenteditable textbox (YouTube uses this, Notion body editor)
 	editable = page.locator('[contenteditable="true"][role="textbox"]').first
 	if editable.count() == 0:
 		editable = page.locator('#contenteditable-root[contenteditable="true"]').first
+	if editable.count() == 0:
+		# For Notion body editor, look for the main contenteditable
+		editable = page.locator('[data-content-root="true"] [contenteditable="true"]').first
 
 	if editable.count() > 0:
 		editable.wait_for(state='visible', timeout=3000)
 		try:
-			editable.fill(str(text))
-			page.wait_for_timeout(200)
-			return
+			# For Notion, clear first if it's the body editor
+			if is_notion:
+				try:
+					editable.select_text()
+					page.wait_for_timeout(100)
+				except Exception:
+					pass
+			# For Notion, many editors ignore fill(). Try keyboard typing after focusing
+			try:
+				editable.fill(str(text))
+			except Exception:
+				editable.click(timeout=1000)
+				page.wait_for_timeout(100)
+				page.keyboard.type(str(text))
+			page.wait_for_timeout(300)
+			# Verify text was set
+			try:
+				inner = editable.inner_text()
+			except Exception:
+				inner = ''
+			if str(text).strip().lower() in str(inner).lower():
+				return
 		except Exception:
-			editable.click(timeout=1000)
-			page.keyboard.type(str(text))
-			page.wait_for_timeout(200)
-			return
+			try:
+				editable.click(timeout=1000)
+				# Clear any existing content first
+				page.keyboard.press('Control+a')
+				page.wait_for_timeout(100)
+				page.keyboard.type(str(text))
+				page.wait_for_timeout(300)
+				# Verify
+				try:
+					inner2 = editable.inner_text()
+				except Exception:
+					inner2 = ''
+				if str(text).strip().lower() in str(inner2).lower():
+					return
+			except Exception:
+				pass
 
 	# Last resort: type after focusing original
 	try:
 		loc.click(timeout=1000)
+		page.wait_for_timeout(150)
+		# Clear existing if input field
+		try:
+			page.keyboard.press('Control+a')
+			page.wait_for_timeout(100)
+		except Exception:
+			pass
 		page.keyboard.type(str(text))
-		page.wait_for_timeout(200)
-		return
+		page.wait_for_timeout(300)
+		# Verify if possible
+		try:
+			is_input = loc.evaluate('el => el.tagName === "INPUT" || el.tagName === "TEXTAREA"')
+			if is_input:
+				current = loc.input_value()
+			else:
+				try:
+					current = loc.inner_text()
+				except Exception:
+					current = ''
+			if str(text).strip().lower() in str(current).lower():
+				return
+		except Exception:
+			pass
 	except Exception:
 		pass
 
@@ -370,15 +461,145 @@ def observe_route():
 			'selector': f'role={role}[name="{name}"]',
 		})
 
+	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
+	try:
+		ce_items = _page.evaluate("""
+		  () => {
+		    function visible(el) {
+		      const style = window.getComputedStyle(el);
+		      const rect = el.getBoundingClientRect();
+		      return (
+		        style &&
+		        style.visibility !== 'hidden' &&
+		        style.display !== 'none' &&
+		        rect.width > 0 && rect.height > 0
+		      );
+		    }
+		    const results = [];
+		    const selectors = [
+		      '[contenteditable="true"][role="textbox"]',
+		      '#contenteditable-root[contenteditable="true"]',
+		      '[data-content-root="true"] [contenteditable="true"]'
+		    ];
+		    const seen = new Set();
+		    for (const sel of selectors) {
+		      document.querySelectorAll(sel).forEach(el => {
+		        if (!visible(el)) return;
+		        const key = sel + '|' + (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+		        if (seen.has(key)) return;
+		        seen.add(key);
+		        const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || 'Body editor').trim();
+		        results.push({ role: 'textbox', name, selector: sel });
+		      });
+		    }
+		    return results;
+		  }
+		""") or []
+
+		seen_ce = { (item['role'], item['label']) for item in interactables }
+		for it in ce_items:
+			role = it.get('role')
+			name = it.get('name') or ''
+			selector_str = it.get('selector') or '[contenteditable="true"]'
+			if not role or not name:
+				continue
+			key = (role, name)
+			if key in seen_ce:
+				continue
+			seen_ce.add(key)
+			interactables.append({
+				'role': role,
+				'label': name,
+				'selector': selector_str,
+			})
+	except Exception:
+		pass
+
+	# Notion-specific: ensure a clear 'Body editor' candidate exists when a Notion editor is present
+	try:
+		if ('notion' in (_page.url or '').lower()) or (_page.locator('[data-content-root="true"]').count() > 0):
+			label_set = { item['label'] for item in interactables }
+			if 'Body editor' not in label_set:
+				interactables.append({
+					'role': 'textbox',
+					'label': 'Body editor',
+					'selector': '[data-content-root="true"] [contenteditable="true"]',
+				})
+	except Exception:
+		pass
+
+	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
+	try:
+		ce_items = _page.evaluate("""
+		  () => {
+		    function visible(el) {
+		      const style = window.getComputedStyle(el);
+		      const rect = el.getBoundingClientRect();
+		      return (
+		        style &&
+		        style.visibility !== 'hidden' &&
+		        style.display !== 'none' &&
+		        rect.width > 0 && rect.height > 0
+		      );
+		    }
+		    const results = [];
+		    const selectors = [
+		      '[contenteditable="true"][role="textbox"]',
+		      '#contenteditable-root[contenteditable="true"]',
+		      '[data-content-root="true"] [contenteditable="true"]'
+		    ];
+		    const seen = new Set();
+		    for (const sel of selectors) {
+		      document.querySelectorAll(sel).forEach(el => {
+		        if (!visible(el)) return;
+		        const key = sel + '|' + (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
+		        if (seen.has(key)) return;
+		        seen.add(key);
+		        const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || 'Body editor').trim();
+		        results.push({ role: 'textbox', name, selector: sel });
+		      });
+		    }
+		    return results;
+		  }
+		""") or []
+
+		seen_ce = { (item['role'], item['label']) for item in interactables }
+		for it in ce_items:
+			role = it.get('role')
+			name = it.get('name') or ''
+			selector_str = it.get('selector') or '[contenteditable="true"]'
+			if not role or not name:
+				continue
+			key = (role, name)
+			if key in seen_ce:
+				continue
+			seen_ce.add(key)
+			interactables.append({
+				'role': role,
+				'label': name,
+				'selector': selector_str,
+			})
+	except Exception:
+		pass
 
 
 
-	hint = _page.evaluate("""
-	  () => {
-		const btns = Array.from(document.querySelectorAll('button')).map(b => b.innerText.toLowerCase());
-		return btns.find(t => /create|new|filter|add/.test(t)) || '';
-	  }
-	""")
+
+	# Removed heuristic hint extraction - LLM makes all decisions
+	hint = ''
+
+	# Expose basic frames info for LLM (index, name, url)
+	try:
+		frames_info = [
+			{
+				'index': i,
+				'name': (f.name or ''),
+				'url': (f.url or ''),
+			}
+			for i, f in enumerate(_page.frames)
+		]
+	except Exception:
+		frames_info = []
 	
 	# Capture error messages, alerts, and validation messages
 	error_messages = _page.evaluate("""
@@ -465,7 +686,8 @@ def observe_route():
 		'a11y': a11y, 
 		'interactables': interactables, 
 		'hint': hint,
-		'errors': error_messages
+		'errors': error_messages,
+		'frames': frames_info
 	})
 
 
@@ -528,65 +750,82 @@ def act_route():
 	data = request.get_json(force=True) or {}
 	try:
 		t = data.get('type')
-		if t == 'click' and data.get('selector'):
-			# Robust click that handles overlays/backdrops
-			_robust_click(_page, data['selector'])
-			_page.wait_for_timeout(700)
+		# Optional: target a specific frame by index
+		frame_index = data.get('frame')
+		ctx = _page
+		try:
+			if isinstance(frame_index, int):
+				frames = _page.frames
+				if 0 <= frame_index < len(frames):
+					ctx = frames[frame_index]
+		except Exception:
+			pass
+
+		# Helper: get candidate selectors (string or list)
+		def iter_selectors(d):
+			sel = d.get('selector')
+			sels = d.get('selectors')
+			if sels and isinstance(sels, list):
+				for s in sels:
+					yield s
+			elif isinstance(sel, list):
+				for s in sel:
+					yield s
+			elif isinstance(sel, str):
+				yield sel
+
+		if t == 'click':
+			last_err = None
+			for sel in iter_selectors(data):
+				try:
+					_robust_click(ctx, sel)
+					(_page if ctx is _page else ctx.page).wait_for_timeout(700)
+					return jsonify({ 'ok': True })
+				except Exception as e:
+					last_err = str(e)
+			return jsonify({ 'ok': False, 'error': last_err or 'all selectors failed' }), 500
 		elif t == 'scroll':
 			delta = data.get('delta', 600)
-			_page.mouse.wheel(0, delta)
-			_page.wait_for_timeout(200)
-		elif t == 'type' and data.get('selector') and data.get('text') is not None:
-			_robust_type(_page, data['selector'], str(data['text']))
-			# Special handling for UberEats address entry: select first autocomplete option, then search
-			try:
-				selector_str = str(data.get('selector') or '')
-				if 'Enter delivery address' in selector_str:
-					selected = False
-					# Try clicking the first suggestion from the listbox
+			(_page if ctx is _page else ctx.page).mouse.wheel(0, delta)
+			(_page if ctx is _page else ctx.page).wait_for_timeout(200)
+			return jsonify({ 'ok': True })
+		elif t == 'type' and data.get('text') is not None:
+			text = str(data.get('text'))
+			last_err = None
+			for sel in iter_selectors(data):
+				try:
+					_robust_type(ctx, sel, text)
+					return jsonify({ 'ok': True })
+				except Exception as e:
+					last_err = str(e)
+			return jsonify({ 'ok': False, 'error': last_err or 'type failed' }), 500
+		elif t == 'assert':
+			kind = (data.get('kind') or '').lower()
+			if kind == 'text_present':
+				needle = str(data.get('text') or '')
+				content = ctx.evaluate('() => document.body.innerText')
+				if needle and needle.lower() in (content or '').lower():
+					return jsonify({ 'ok': True })
+				return jsonify({ 'ok': False, 'error': 'text not found' }), 400
+			elif kind == 'url_contains':
+				sub = str(data.get('substring') or '')
+				cur = (_page if ctx is _page else ctx.page).url
+				if sub and sub in cur:
+					return jsonify({ 'ok': True })
+				return jsonify({ 'ok': False, 'error': 'url does not contain substring' }), 400
+			elif kind == 'element_visible':
+				last_err = None
+				for sel in iter_selectors(data):
 					try:
-						lb = _page.locator('[role="listbox"]').first
-						lb.wait_for(state='visible', timeout=8000)
-						opt = _page.locator('[role="option"]').first
-						opt.wait_for(state='visible', timeout=4000)
-						opt.click(timeout=5000)
-						_page.wait_for_load_state('networkidle', timeout=15000)
-						selected = True
-					except Exception:
-						pass
-					# Fallback: ArrowDown + Enter to select first suggestion
-					if not selected:
-						try:
-							_page.keyboard.press('ArrowDown')
-							_page.wait_for_timeout(200)
-							_page.keyboard.press('Enter')
-							_page.wait_for_load_state('networkidle', timeout=15000)
-							selected = True
-						except Exception:
-							pass
-					# Best-effort: find a search box and query for chicken wings
-					try:
-						try:
-							search = _page.get_by_role('searchbox')
-						except Exception:
-							search = None
-						if not search or (hasattr(search, 'count') and search.count() == 0):
-							search = _page.locator('input[placeholder*="Search" i], input[type="search"]').first
-						if hasattr(search, 'count') and search.count() == 0:
-							raise Exception('No visible search box')
-						search.wait_for(state='visible', timeout=6000)
-						try:
-							search.fill('chicken wings')
-						except Exception:
-							search.click(timeout=1500)
-							_page.keyboard.type('chicken wings')
-						_page.keyboard.press('Enter')
-						_page.wait_for_load_state('networkidle', timeout=15000)
-					except Exception:
-						pass
-			except Exception:
-				pass
-		return jsonify({ 'ok': True })
+						ctx.locator(sel).first.wait_for(state='visible', timeout=4000)
+						return jsonify({ 'ok': True })
+					except Exception as e:
+						last_err = str(e)
+				return jsonify({ 'ok': False, 'error': last_err or 'element not visible' }), 400
+			else:
+				return jsonify({ 'ok': False, 'error': 'unknown assert kind' }), 400
+		else:
+			return jsonify({ 'ok': False, 'error': 'unknown or malformed action' }), 400
 	except Exception as e:
 		print(f"[ACT ERROR] Type: {data.get('type')}, Selector: {data.get('selector')}, Error: {str(e)}")
 		return jsonify({ 'ok': False, 'error': str(e) }), 500

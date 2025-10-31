@@ -105,7 +105,6 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         'current_url': data['url'],
         'dom_snapshot': data['a11y'],
         'interactable_elements': data['interactables'],
-        'driver_hint': data.get('hint') or '',
         'errors': data.get('errors') or [],
         'screenshot_bytes': screenshot_bytes,
         'screenshots': state['screenshots'] + [screenshot_bytes],
@@ -115,8 +114,6 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     print(f"  Found {len(data['interactables'])} interactable elements")
     if data.get('errors'):
         print(f"  ⚠️  Errors detected: {data['errors']}")
-    if updates['driver_hint']:
-        print(f"  Hint: {updates['driver_hint']}")
     
     return updates
 
@@ -152,29 +149,58 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
 **Available Interactive Elements**:
 {json.dumps(interactables, indent=2)}
 
-"""
-    # If driver provided a hint (e.g., found buttons containing create/new/add), surface it to the LLM
-    if state.get('driver_hint'):
-        prompt += f"""
-Driver hint: {state['driver_hint']}
-Prefer elements related to this hint if they advance the goal.
-"""
-
-    prompt += f"""
 **Task**: Score each element from 0-10 based on how likely acting on it (click, type, or scroll) will help achieve the goal.
+
+SCORING SCALE:
 - 10 = Directly achieves the goal or is the next critical step
 - 7-9 = Very likely to progress toward the goal
-- 4-6 = Might be useful
+- 4-6 = Might be useful or indirectly related
 - 0-3 = Unlikely to help or wrong direction
 
-Also consider:
-- Don't repeat recent actions unless necessary
-- Look for buttons/links with relevant text (e.g., "Create", "New", "Filter", "Add")
-- If we're in a modal/form, look for "Save", "Submit", "Create" buttons
-- If stuck, try different approaches
-- If the goal mentions an object (e.g., "project"), prefer actions that explicitly reference that object (e.g., "Add project", "New project", "Create project").
-- If a textbox for the object's name is present (e.g., "Project name"), propose a `type` action with appropriate text extracted from the goal.
- - If relevant controls are likely off-screen (long lists, partial content, or no strong candidates), include a `scroll` candidate to discover elements. Use label "Scroll down" (delta ≈ +600) or "Scroll up" (delta ≈ -600) as appropriate. Use selector "window".
+SCORING STRATEGY (why buttons/elements matter):
+
+1. **ACTION TRIGGER BUTTONS** (score high when goal requires creation/modification):
+   - Look for buttons/links with action words: "Create", "New", "Add", "Filter", "Delete", "Edit"
+   - These buttons typically OPEN workflows (modals, forms, menus) needed to accomplish goals
+   - Example: Goal "create project" → "New project" button scores 9-10 (opens creation flow)
+   - Example: Goal "filter by status" → "Filter" button scores 9-10 (opens filter menu)
+
+2. **SUBMISSION BUTTONS** (score high when in a form/modal):
+   - When modal/form is open, look for: "Save", "Submit", "Create", "Confirm", "Apply"
+   - These buttons FINALIZE workflows after data entry
+   - Example: Typed project name, now see "Create" button → score 10 (completes creation)
+
+3. **INPUT FIELDS** (score high when goal requires data entry):
+   - Match textbox labels to goal objects (e.g., goal mentions "project name" → "Project name" textbox scores high)
+   - Distinguish between TITLE vs BODY fields:
+     * Title fields: "Name", "Title", "Project name", "Start typing to edit text"
+     * Body fields: "Description", "Content", "Start typing", "Write something", contenteditable areas
+   - For goals with multiple data points (e.g., "create page X with content Y"):
+     * Propose SEPARATE type actions for title field (text=X) and body field (text=Y)
+     * Both should score high (9-10) as both are critical steps
+
+4. **SEMANTIC MATCHING** (align element labels with goal keywords):
+   - If goal mentions "project", prioritize elements containing "project"
+   - If goal mentions "comment", prioritize comment textboxes and post buttons
+   - If goal mentions "status" or "filter", prioritize status dropdowns and filter controls
+   - Example: Goal "assign to kgen" → "Assignee" dropdown scores 9-10
+
+5. **SCROLL FOR DISCOVERY** (score moderately when stuck or incomplete view):
+   - If NO high-quality action candidates visible (no obvious buttons/fields), propose scroll
+   - Scroll reveals hidden UI elements (long lists, below-fold content, dropdown options)
+   - Use: selector="window", label="Scroll down", action_type="scroll", score=6-7
+   - Purpose: exploration when direct path isn't visible
+
+6. **AVOID REPETITION**:
+   - Check recent actions - don't propose the same action twice unless necessary
+   - If an action was already tried without progress, reduce its score
+
+7. **EXTRACT GOAL DATA COMPLETELY**:
+   - Parse goal for ALL text/data that needs to be entered
+   - Example: "create page called Daily Note and write Softlight Engineering Assignment"
+     * Title to type: "Daily Note"
+     * Content to type: "Softlight Engineering Assignment"
+   - Propose type actions with the EXACT text from the goal
 
 Return a JSON array with this structure:
 [
@@ -192,6 +218,22 @@ Return a JSON array with this structure:
     "text": "gamma",
     "score": 10,
     "reasoning": "Entering the required project name aligns with the goal"
+  }},
+  {{
+    "selector": "role=textbox[name=\"Start typing to edit text\"]",
+    "label": "Start typing to edit text",
+    "action_type": "type",
+    "text": "Daily Note",
+    "score": 10,
+    "reasoning": "Setting the page title to 'Daily Note' as specified in the goal"
+  }},
+  {{
+    "selector": "role=textbox[name=\"Start typing\"], [contenteditable=\"true\"]",
+    "label": "Body editor",
+    "action_type": "type",
+    "text": "This is great",
+    "score": 10,
+    "reasoning": "Adding the body content 'This is great' to the page as specified in the goal"
   }},
   {{
     "selector": "window",
@@ -279,8 +321,8 @@ Return ONLY the JSON array, no additional text."""
             'error': f"Failed to parse LLM response: {e}"
         }
 def decide_action_node(state: AgentState) -> Dict[str, Any]:
-    """Use LLM to choose the next action from scored candidates, considering goal, errors, and history."""
-    print(f"\n[DECIDE] Selecting next action using LLM policy")
+    """Use LLM to choose the next action from scored candidates - PURE LLM DECISION, NO HEURISTICS."""
+    print(f"\n[DECIDE] Selecting next action using pure LLM policy (no heuristics)")
 
     scored = state.get('scored_actions') or []
     if not scored:
@@ -299,7 +341,12 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
         # If we've exhausted options, fall back to full list to avoid stalling
         base_list = scored
 
-    # Prepare compact candidate list for the prompt
+    # Ensure we have candidates
+    if not base_list:
+        print(f"  ⚠️  No candidates available")
+        return { 'next_action': state.get('next_action') }
+    
+    # Prepare candidate list for LLM decision
     candidates = [
         {
             'i': i,
@@ -310,45 +357,70 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
             'text': a.text,
             'reasoning': a.reasoning,
         }
-        for i, a in enumerate(base_list[:12]) # cap to avoid token bloat
+        for i, a in enumerate(base_list[:15]) # Show more candidates for better LLM choice
     ]
 
     recent = state['action_history'][-5:]
     errors = state.get('errors') or []
 
-    prompt = f"""You are a decision policy that chooses the next UI action from candidates.
+    prompt = f"""You are an autonomous web agent decision policy. Choose the next UI action from candidates.
 
 Goal: {state['goal']}
 Current URL: {state['current_url']}
 Errors/Validation: {json.dumps(errors)}
-
 Recent actions (last 5): {json.dumps(recent)}
 
 Candidates (choose one by index 'i'):
 {json.dumps(candidates, indent=2)}
 
-Guidelines:
-- Prefer actions that directly advance the goal semantics (e.g., delete when goal mentions delete).
-- If validation indicates required fields, prefer typing the missing value before submitting.
-- If a modal/menu is open, prefer the confirm/primary/destructive action inside it rather than reopening the menu.
-- Avoid repeating the exact same action unless necessary.
-- Consider the provided scores but you may override them when context (goal/errors) dictates a better choice.
- - If none of the candidates clearly advance the goal and recent attempts stalled, prefer a brief exploratory `scroll` (down first, then up) to reveal additional controls before retrying similar clicks.
+DECISION STRATEGY:
+You must balance two competing needs:
 
-Return ONLY a JSON object in this shape:
+1. **EXPLOITATION** (using high-scored actions):
+   - When you see a high-scored action (≥7.0) that directly advances the goal, strongly prefer it
+   - High scores mean the action is semantically aligned with the goal
+   - Exploit clear opportunities to make progress
+
+2. **EXPLORATION** (discovering new options):
+   - When ALL candidates have low scores (<5.0), it means nothing obvious advances the goal
+   - In this case, PREFER scroll/exploratory actions to discover new UI elements
+   - Clicking poor-scored actions (score < 5.0) is likely to waste steps or move in wrong direction
+   - Scroll is especially valuable when: stuck in same place, no high-quality options visible, or repeated low scores
+   
+3. **ERROR RECOVERY**:
+   - If validation errors exist, prioritize actions that address them (e.g., fill required fields)
+   - Errors indicate the last action was incomplete - look for what's missing
+
+4. **AVOID LOOPS**:
+   - Check recent action history - don't repeat ineffective patterns
+   - If you've tried high-scored actions without progress, switch to exploration
+   - Sometimes a strategic scroll or menu opening unlocks the next step
+
+5. **QUALITY AWARENESS**:
+   - Be honest about candidate quality in your rationale
+   - If max score is <5.0, acknowledge options are weak
+   - Don't pretend a score-3.0 action is good - use it only if exploration exhausted
+
+STRATEGIC EXAMPLES:
+- Top score 9.5 "Create project button" → Click it (high exploitation value)
+- Top score 4.2 "Random link", scroll available → Scroll (explore for better options)
+- Top score 7.5 but already clicked 2 times → Try scroll or 2nd-best option
+- Validation error "Name required" + score 8.5 "Name textbox" → Type name (error recovery)
+
+Return ONLY a JSON object:
 {{
   "i": <candidate index>,
-  "rationale": "why this is best",
+  "rationale": "why this action is the best next step (mention if exploiting high score vs exploring)",
   "textOverride": "optional text for type actions or null"
 }}"""
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "Select the best next action for goal-directed web automation. Return only valid JSON."},
+            {"role": "system", "content": "You are an autonomous web navigation agent. Make strategic decisions to reach the goal. Return only valid JSON."},
             {"role": "user", "content": prompt},
         ],
-        temperature=0.2,
+        temperature=0.3,
     )
 
     content = response.choices[0].message.content.strip()
@@ -364,8 +436,9 @@ Return ONLY a JSON object in this shape:
         rationale = decision.get('rationale') or ''
         text_override = decision.get('textOverride')
 
-        if 0 <= idx < len(candidates):
+        if 0 <= idx < len(candidates) and idx < len(base_list):
             chosen = base_list[idx]
+            
             # Apply optional text override if LLM provided it
             if chosen.action_type == 'type' and text_override is not None:
                 chosen = ScoredAction(
@@ -386,16 +459,18 @@ Return ONLY a JSON object in this shape:
                     text=chosen.text,
                 )
 
-            print(f"  Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
-            print(f"  Policy rationale: {rationale}")
+            print(f"  ✓ Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
+            print(f"  Rationale: {rationale}")
             return { 'next_action': chosen }
 
-        # Fallback to previous heuristic choice
-        return { 'next_action': state.get('next_action') }
+        # Fallback to first candidate
+        print(f"  ⚠️  Invalid index {idx}, falling back to first candidate")
+        return { 'next_action': base_list[0] }
 
     except Exception as e:
         print(f"  ⚠️  Failed to parse decision: {e}")
-        return { 'next_action': state.get('next_action') }
+        # Fallback to highest scored action
+        return { 'next_action': base_list[0] if base_list else None }
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
@@ -457,7 +532,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         
         print(f"  ✓ Action executed successfully")
         
-        # Add to history
+        # Add to history (include text for type actions so we can verify content later)
         action_record = {
             'type': action.action_type,
             'selector': action.selector,
@@ -465,6 +540,8 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'score': action.score,
             'reasoning': action.reasoning,
         }
+        if action.action_type == 'type' and action.text:
+            action_record['text'] = action.text
         
         # Record this action as tried for the current URL to avoid repeating it
         current_url = state.get('current_url') or ''
@@ -493,58 +570,92 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
 
 
 def check_goal_node(state: AgentState) -> Dict[str, Any]:
-    """Use LLM to check if we've reached the goal."""
-    print(f"\n[CHECK GOAL] Evaluating if goal is reached...")
+    """Use LLM to check if we've reached the goal - PURE LLM EVALUATION, NO HEURISTICS."""
+    print(f"\n[CHECK GOAL] LLM evaluating goal completion...")
     
-    # Heuristic: if the goal is about commenting and we successfully typed then clicked 'Comment', treat as success
-    goal_text = (state.get('goal') or '').lower()
-    if any(keyword in goal_text for keyword in ["comment", "commenting", "post a comment"]):
-        recent = state.get('action_history', [])[-5:]
-        saw_type_into_comment = any(
-            (a.get('type') == 'type' and 'comment' in (a.get('label') or '').lower())
-            or (a.get('type') == 'type' and 'comment' in (a.get('selector') or '').lower())
-            for a in recent
-        )
-        saw_click_comment = any(
-            (a.get('type') == 'click' and 'comment' in (a.get('label') or '').lower())
-            or (a.get('type') == 'click' and 'comment' in (a.get('selector') or '').lower())
-            for a in recent
-        )
-        # If we executed both actions without an error flagged, assume success
-        if saw_type_into_comment and saw_click_comment and not state.get('error'):
-            print("  Goal reached: True (confidence: 1.0)")
-            print("  Reasoning: Typed into the comment box and clicked the Comment button without errors; this satisfies the commenting goal.")
-            return {
-                'goal_reached': True
-            }
-
-    # Build context
-    recent_actions = state['action_history'][-3:]
-    action_summary = [f"{a['type']} on '{a['label']}'" for a in recent_actions]
+    # Build detailed context for LLM
+    recent_actions = state['action_history'][-10:]  # Show more history for better evaluation
     
-    prompt = f"""Determine if the goal has been achieved based on the current state.
+    # Include full action details with text content
+    action_details = []
+    for a in recent_actions:
+        detail = {
+            'type': a['type'],
+            'label': a.get('label', ''),
+            'text': a.get('text', '')  # Include typed text for verification
+        }
+        action_details.append(detail)
+    
+    prompt = f"""Evaluate whether the goal has been achieved based on the complete action history and current state.
 
 **Goal**: {state['goal']}
 **Current URL**: {state['current_url']}
-**Recent Actions**: {', '.join(action_summary) if action_summary else 'None'}
 **Steps Taken**: {state['step_count']}
+**App**: {state.get('app_name', 'Unknown')}
+**Errors**: {json.dumps(state.get('errors', []))}
 
-Has the goal been achieved? Consider:
-- Did we complete the main action? (e.g., created a project, opened a filter)
-- Are we in a success state or confirmation screen?
-- Did we capture the key UI states needed for this workflow?
+**Complete Action History** (chronological order):
+{json.dumps(action_details, indent=2)}
+
+EVALUATION STRATEGY:
+Analyze the action sequence to determine if the goal is TRULY complete. Use these patterns:
+
+1. **COMMENTING GOALS** (e.g., "post a comment", "comment hi on video"):
+   - Look for: type action into comment box + click "Comment"/"Post" button
+   - Success pattern: typed text → clicked submit WITHOUT errors
+   - If you see this sequence completed, goal is reached
+   - Example: typed "hi" into comment textbox, clicked "Comment" → SUCCESS
+
+2. **PAGE/NOTE CREATION GOALS** (e.g., "create page titled X with content Y"):
+   - Look for: type action for TITLE + type action for BODY/CONTENT
+   - In Notion/docs apps, there are usually TWO separate type actions:
+     * First type: page title (e.g., "Daily Note")
+     * Second type: page body content (e.g., "This is great")
+   - Success pattern: both title AND body typed WITHOUT errors
+   - If goal specifies both title and content, BOTH must be present in action history
+   - Example: typed "Daily Note" (title), typed "Softlight Engineering..." (content) → SUCCESS
+
+3. **PROJECT/ITEM CREATION** (e.g., "create project called X"):
+   - Look for: clicked "Create"/"New" → typed name → clicked "Save"/"Create"
+   - Success pattern: opened creation flow + filled required fields + submitted
+   - May involve multiple type actions for different fields (name, description, etc.)
+
+4. **FILTER/NAVIGATION GOALS** (e.g., "filter by in-progress", "go to all issues"):
+   - Look for: navigated to section + applied filter/opened menu
+   - Success pattern: reached target view (URL change or UI state change)
+   - May involve clicks on menus, dropdowns, filter buttons
+
+5. **STATUS CHANGE GOALS** (e.g., "change status to done"):
+   - Look for: opened status menu + clicked desired status option
+   - Success pattern: clicked item → clicked status dropdown → selected target status
+   - Multiple clicks in sequence indicate status change flow
+
+6. **GENERAL CRITERIA**:
+   - All goal components must be addressed (if goal says "A and B", both A and B must be done)
+   - No outstanding errors that invalidate the work
+   - Sufficient evidence in action sequence (don't assume - verify from actions)
+   - Be realistic: if standard workflow completed without errors, likely success
+
+7. **CONFIDENCE LEVELS**:
+   - 0.9-1.0: All steps clearly completed, strong evidence
+   - 0.7-0.8: Most steps done, minor uncertainty
+   - 0.5-0.6: Partial completion, significant steps missing
+   - 0.0-0.4: Goal not reached or too early to tell
+
+BE SPECIFIC: Check action history for exact evidence. Don't assume - verify.
 
 Respond with ONLY a JSON object:
 {{
   "goal_reached": true/false,
-  "reasoning": "Explanation of why the goal is/isn't reached",
-  "confidence": 0.0-1.0
+  "reasoning": "Detailed explanation citing specific actions from history",
+  "confidence": 0.0-1.0,
+  "missing_steps": ["list any steps that still need to be done, or empty array if complete"]
 }}"""
 
     response = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are an expert at evaluating task completion. Return only valid JSON."},
+            {"role": "system", "content": "You are an expert at evaluating web automation task completion. Analyze action sequences carefully. Return only valid JSON."},
             {"role": "user", "content": prompt}
         ],
         temperature=0.2,
@@ -562,16 +673,19 @@ Respond with ONLY a JSON object:
         goal_reached = result.get('goal_reached', False)
         reasoning = result.get('reasoning', 'Unknown')
         confidence = result.get('confidence', 0.5)
+        missing_steps = result.get('missing_steps', [])
         
-        print(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
+        print(f"  ✓ Goal reached: {goal_reached} (confidence: {confidence:.1%})")
         print(f"  Reasoning: {reasoning}")
+        if missing_steps:
+            print(f"  Missing steps: {', '.join(missing_steps)}")
         
         return {
             'goal_reached': goal_reached
         }
         
-    except json.JSONDecodeError:
-        print(f"  ⚠️  Failed to parse goal check response")
+    except json.JSONDecodeError as e:
+        print(f"  ⚠️  Failed to parse goal check response: {e}")
         return {'goal_reached': False}
 
 
