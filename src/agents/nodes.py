@@ -186,23 +186,32 @@ SCORING STRATEGY (why buttons/elements matter):
      * Propose SEPARATE type actions for title field (text=X) and body field (text=Y)
      * Both should score high (9-10) as both are critical steps
 
+4. **ENTITY GROUNDING FIRST (CRITICAL)**:
+   - If the goal names a specific entity (e.g., a page titled "Daily Journal"), FIRST navigate/open that exact entity before attempting any destructive or context-specific action.
+   - Prefer links whose accessible name/text EXACTLY matches the entity. If not visible, prefer using search to locate it.
+   - Until the entity is opened (URL or title indicates we are on it), generic menus like "Delete / More" should score LOW.
+
 4. **SEMANTIC MATCHING** (align element labels with goal keywords):
    - If goal mentions "project", prioritize elements containing "project"
    - If goal mentions "comment", prioritize comment textboxes and post buttons
    - If goal mentions "status" or "filter", prioritize status dropdowns and filter controls
    - Example: Goal "assign to kgen" → "Assignee" dropdown scores 9-10
 
-5. **SCROLL FOR DISCOVERY** (score moderately when stuck or incomplete view):
+5. **DESTRUCTIVE ACTION SAFETY**:
+   - Actions like Delete/Remove/Permanently delete should only score high when the current view clearly refers to the target entity named in the goal.
+   - Otherwise, score them low and prefer navigation to the correct entity first.
+
+6. **SCROLL FOR DISCOVERY** (score moderately when stuck or incomplete view):
    - If NO high-quality action candidates visible (no obvious buttons/fields), propose scroll
    - Scroll reveals hidden UI elements (long lists, below-fold content, dropdown options)
    - Use: selector="window", label="Scroll down", action_type="scroll", score=6-7
    - Purpose: exploration when direct path isn't visible
 
-6. **AVOID REPETITION**:
+7. **AVOID REPETITION**:
    - Check recent actions - don't propose the same action twice unless necessary
    - If an action was already tried without progress, reduce its score
 
-7. **EXTRACT GOAL DATA COMPLETELY**:
+8. **EXTRACT GOAL DATA COMPLETELY**:
    - Parse goal for ALL text/data that needs to be entered
    - Example: "create page called Daily Note and write Softlight Engineering Assignment"
      * Title to type: "Daily Note"
@@ -383,32 +392,36 @@ Candidates (choose one by index 'i'):
 DECISION STRATEGY:
 You must balance two competing needs:
 
-1. **EXPLOITATION** (using high-scored actions):
+1. **ENTITY GROUNDING FIRST (CRITICAL)**:
+   - If the goal includes a specific entity name (e.g., a page titled "Daily Journal"), choose actions that open/navigate to that exact entity BEFORE attempting any destructive or context-dependent action (like Delete, Edit, More...). Prefer exact-text matches; if not visible, use Search to find it.
+
+2. **EXPLOITATION** (using high-scored actions):
    - When you see a high-scored action (≥7.0) that directly advances the goal, strongly prefer it
    - High scores mean the action is semantically aligned with the goal
    - Exploit clear opportunities to make progress
 
-2. **EXPLORATION** (discovering new options):
+3. **EXPLORATION** (discovering new options):
    - When ALL candidates have low scores (<5.0), it means nothing obvious advances the goal
    - In this case, PREFER scroll/exploratory actions to discover new UI elements
    - Clicking poor-scored actions (score < 5.0) is likely to waste steps or move in wrong direction
    - Scroll is especially valuable when: stuck in same place, no high-quality options visible, or repeated low scores
    
-3. **ERROR RECOVERY**:
+4. **ERROR RECOVERY**:
    - If validation errors exist, prioritize actions that address them (e.g., fill required fields)
    - Errors indicate the last action was incomplete - look for what's missing
 
-4. **AVOID LOOPS**:
+5. **AVOID LOOPS**:
    - Check recent action history - don't repeat ineffective patterns
    - If you've tried high-scored actions without progress, switch to exploration
    - Sometimes a strategic scroll or menu opening unlocks the next step
 
-5. **QUALITY AWARENESS**:
+6. **QUALITY AWARENESS**:
    - Be honest about candidate quality in your rationale
    - If max score is <5.0, acknowledge options are weak
    - Don't pretend a score-3.0 action is good - use it only if exploration exhausted
 
 STRATEGIC EXAMPLES:
+- Goal "delete page titled Daily Journal": If a link or result named "Daily Journal" is present, click it first. Only after the page is opened should "Delete" or "More" be chosen.
 - Top score 9.5 "Create project button" → Click it (high exploitation value)
 - Top score 4.2 "Random link", scroll available → Scroll (explore for better options)
 - Top score 7.5 but already clicked 2 times → Try scroll or 2nd-best option
@@ -527,7 +540,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
 
     # Execute via driver
     try:
-        resp = requests.post(f"{DRIVER_URL}/act", json=payload, timeout=15)
+        resp = requests.post(f"{DRIVER_URL}/act", json=payload, timeout=60)
         result = resp.json()
         
         if not result.get('ok'):
@@ -538,6 +551,33 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             }
         
         print(f"  ✓ Action executed successfully")
+
+        # Post-action verification for typing: ensure text became visible; retry once if not
+        if action.action_type == 'type' and action.text:
+            try:
+                # Assert the typed text is present in page text
+                verify = requests.post(f"{DRIVER_URL}/act", json={
+                    'type': 'assert',
+                    'kind': 'text_present',
+                    'text': str(action.text),
+                }, timeout=6)
+                ok = verify.ok and (verify.json().get('ok') is True)
+                if not ok:
+                    # If focus likely still on title and we intended body, send Enter handoff then retype once
+                    try:
+                        requests.post(f"{DRIVER_URL}/act", json={ 'type': 'press', 'keys': 'Enter' }, timeout=4)
+                    except Exception:
+                        pass
+                    try:
+                        requests.post(f"{DRIVER_URL}/act", json=payload, timeout=10)
+                        # One last check
+                        requests.post(f"{DRIVER_URL}/act", json={
+                            'type': 'assert', 'kind': 'text_present', 'text': str(action.text)
+                        }, timeout=5)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
         
         # Add to history (include text for type actions so we can verify content later)
         action_record = {

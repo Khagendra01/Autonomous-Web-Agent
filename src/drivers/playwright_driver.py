@@ -32,12 +32,50 @@ def _debug_save_locator(locator, prefix: str) -> None:
 
 
 def to_interactables(a11y: dict) -> list[dict]:
+	"""Convert accessibility tree to interactables, filtering out trap spans."""
 	out: list[dict] = []
+	page_ref = _page  # Capture page reference for validation
 
 	def walk(node: dict):
 		role = node.get('role')
 		name = node.get('name') or ''
 		if role in ["button", "textbox", "combobox", "link", "menuitem", "checkbox", "radio"]:
+			# For textbox elements, validate the selector doesn't match a trap span
+			if role == "textbox" and page_ref:
+				try:
+					# Check if this selector would match a trap span
+					selector = f"role={role}[name=\"{name}\"]"
+					# Use evaluate to check if the matched element is a trap
+					is_trap = page_ref.evaluate(f"""
+						() => {{
+							try {{
+								const matches = document.querySelectorAll('*[role="textbox"]');
+								for (const el of matches) {{
+									const ariaLabel = el.getAttribute('aria-label') || el.textContent || '';
+									if (ariaLabel.trim() === '{name}') {{
+										// Check if this is a trap span or inside one
+										if (el.hasAttribute('data-content-editable-root-tiny-selection-trap')) {{
+											return true;
+										}}
+										const trapParent = el.closest('[data-content-editable-root-tiny-selection-trap]');
+										if (trapParent) {{
+											return true;
+										}}
+									}}
+								}}
+								return false;
+							}} catch (e) {{
+								return false;
+							}}
+						}}
+					""")
+					if is_trap:
+						# Skip this trap span - we'll add the real contenteditable via discovery
+						return
+				except Exception:
+					# If validation fails, include it anyway (better than missing elements)
+					pass
+			
 			out.append({
 				'role': role,
 				'label': name,
@@ -233,11 +271,131 @@ def _robust_click(ctx, selector: str) -> None:
 
 def _robust_type(ctx, selector: str, text: str) -> None:
 	pg = (ctx.page if hasattr(ctx, 'page') else ctx)
+	print(f"[DEBUG TYPE] Starting type with selector: {selector}, text: {text}")
+	
 	# 1) Try target selector directly (don't abort if not visible)
 	loc = None
 	try:
 		loc = ctx.locator(selector).first
+		
 		_debug_save_locator(loc, f"before-type-{re.sub('[^a-zA-Z0-9_-]+','_',selector)[:60]}")
+		
+		# CRITICAL FIX: Validate selector doesn't resolve to trap span
+		# If it does, find and use the real contenteditable parent
+		try:
+			el_handle = loc.element_handle(timeout=500)
+			if el_handle:
+				# Get detailed info about what element we matched
+				el_info = ctx.evaluate("""
+				  (el) => {
+				    if (!el) return null;
+				    return {
+				      tagName: el.tagName,
+				      hasTrapAttr: el.hasAttribute('data-content-editable-root-tiny-selection-trap'),
+				      contenteditable: el.getAttribute('contenteditable'),
+				      role: el.getAttribute('role'),
+				      placeholder: el.getAttribute('placeholder'),
+				      ariaLabel: el.getAttribute('aria-label'),
+				      textContent: (el.textContent || '').slice(0, 50),
+				      hasTrapParent: !!el.closest('[data-content-editable-root-tiny-selection-trap]')
+				    };
+				  }
+				""", el_handle)
+				print(f"[DEBUG TYPE] Resolved element info: {json.dumps(el_info, indent=2)}")
+				
+				is_trap_result = ctx.evaluate("""
+				  (el) => {
+				    if (!el) return false;
+				    // Direct trap check
+				    if (el.hasAttribute('data-content-editable-root-tiny-selection-trap')) return true;
+				    // Inside trap check
+				    if (el.closest('[data-content-editable-root-tiny-selection-trap]')) return true;
+				    return false;
+				  }
+				""", el_handle)
+				
+				print(f"[DEBUG TYPE] Is trap? {is_trap_result}")
+				
+				if is_trap_result:
+					print(f"[DEBUG TYPE] TRAP DETECTED! Finding real contenteditable...")
+					# Find the real contenteditable parent
+					ce_info = ctx.evaluate("""
+					  (el) => {
+						  const trap = el.hasAttribute('data-content-editable-root-tiny-selection-trap') 
+						    ? el 
+						    : el.closest('[data-content-editable-root-tiny-selection-trap]');
+						  if (!trap) return null;
+						  const ce = trap.closest('[contenteditable="true"]:not([data-content-editable-void])');
+						  if (!ce) return null;
+						  // Prefer Notion H1 title
+						  const h1 = ce.querySelector('h1[contenteditable="true"]') || ce.closest('h1[contenteditable="true"]');
+						  if (h1) {
+						    return { type: 'h1', tagName: h1.tagName, placeholder: h1.getAttribute('placeholder') || '' };
+						  }
+						  return { type: 'ce', tagName: ce.tagName };
+						}
+					""", el_handle)
+					
+					print(f"[DEBUG TYPE] CE info: {json.dumps(ce_info)}")
+					
+					if ce_info and ce_info.get('type') == 'h1':
+						loc = ctx.locator('div.notion-page-block h1[contenteditable="true"]').first
+						print(f"[DEBUG TYPE] ✓ Normalized trap to Notion H1 title")
+					elif ce_info and ce_info.get('type') == 'ce':
+						# Find the specific contenteditable parent
+						try:
+							ce_handle = ctx.evaluate_handle("el => el.closest('[contenteditable=\"true\"]:not([data-content-editable-void])')", el_handle)
+							if ce_handle:
+								loc = ctx.locator('[contenteditable="true"]').filter(has=ce_handle).first
+								print(f"[DEBUG TYPE] ✓ Normalized trap to parent contenteditable")
+							else:
+								loc = ctx.locator('[contenteditable="true"]:not([data-content-editable-void])').first
+								print(f"[DEBUG TYPE] ✓ Using fallback contenteditable selector")
+						except Exception as e2:
+							loc = ctx.locator('[contenteditable="true"]:not([data-content-editable-void])').first
+							print(f"[DEBUG TYPE] ✓ Exception fallback: {e2}")
+				else:
+					print(f"[DEBUG TYPE] Not a trap, using original selector")
+					# If this is the generic Notion body prompt but pointing to the header container, redirect to page content editor
+					try:
+						if el_info and (el_info.get('ariaLabel') or '').strip() == 'Start typing to edit text':
+							# Prefer Notion page title H1 if present and empty; else force body editor when title already set
+							title_loc = ctx.locator('div.notion-page-block h1[contenteditable="true"]').first
+							used_title_redirect = False
+							try:
+								if title_loc.count() > 0:
+									is_empty = False
+									try:
+										is_empty = ctx.evaluate('el => !el || (el.innerText || "\n").trim().length === 0', title_loc.element_handle(timeout=500))
+									except Exception:
+										pass
+									if is_empty:
+										loc = title_loc
+										used_title_redirect = True
+										print(f"[DEBUG TYPE] ✓ Redirected to Notion H1 page title (empty)")
+							except Exception:
+								pass
+
+							if not used_title_redirect:
+								# Title exists and likely non-empty; force body editor under page content
+								candidate = ctx.locator('.notion-page-content [contenteditable="true"]:not([data-content-editable-void])').first
+								if candidate.count() > 0:
+									loc = candidate
+									print(f"[DEBUG TYPE] ✓ Redirected to main page content editor under .notion-page-content")
+								else:
+									# Fallback: any visible contenteditable that is not inside the header section
+									candidate = ctx.locator('[contenteditable="true"]').filter(has_not=ctx.locator('div[role="banner"], header, .notion-frame')).first
+									if candidate.count() > 0:
+										loc = candidate
+										print(f"[DEBUG TYPE] ✓ Redirected to non-header contenteditable")
+					except Exception as e3:
+						print(f"[DEBUG TYPE] Heuristic redirect failed: {e3}")
+		except Exception as e:
+			print(f"[DEBUG TYPE] Trap validation failed: {e}")
+			import traceback
+			traceback.print_exc()
+			pass
+		
 		try:
 			# Prefer fill when possible
 			loc.fill(str(text))
@@ -253,26 +411,79 @@ def _robust_type(ctx, selector: str, text: str) -> None:
 				pass
 			loc.click(timeout=1500)
 			pg.wait_for_timeout(100)
-			# If focus landed on a tiny selection trap span, redirect focus to the nearest real contenteditable
+			
+			# CRITICAL: After clicking, verify focus is on real contenteditable, not trap
+			# This must happen before typing
 			try:
-				refocused = ctx.evaluate("""
+				active_info = ctx.evaluate("""
 				  () => {
-				    const trap = document.activeElement;
-				    if (!trap) return false;
-				    const isTrap = trap.hasAttribute('data-content-editable-root-tiny-selection-trap');
-				    if (!isTrap) return false;
-				    const candidate = trap.closest('[contenteditable="true"]:not([data-content-editable-void])');
-				    if (candidate && typeof candidate.focus === 'function') {
-				      candidate.focus();
-				      return true;
-				    }
-				    return false;
+				    const active = document.activeElement;
+				    if (!active) return { active: null };
+				    return {
+				      tagName: active.tagName,
+				      hasTrapAttr: active.hasAttribute('data-content-editable-root-tiny-selection-trap'),
+				      contenteditable: active.getAttribute('contenteditable'),
+				      role: active.getAttribute('role'),
+				      placeholder: active.getAttribute('placeholder')
+				    };
 				  }
 				""")
-				if refocused:
-					pg.wait_for_timeout(50)
-			except Exception:
+				print(f"[DEBUG TYPE] Active element after click: {json.dumps(active_info)}")
+				
+				fixed = ctx.evaluate("""
+				  () => {
+				    const active = document.activeElement;
+				    if (!active) return false;
+				    // Check if focus is on trap
+				    const isTrap = active.hasAttribute('data-content-editable-root-tiny-selection-trap');
+				    const trapParent = active.closest('[data-content-editable-root-tiny-selection-trap]');
+				    if (isTrap || trapParent) {
+				      // Find real contenteditable parent
+				      const trapEl = isTrap ? active : trapParent;
+				      const ce = trapEl.closest('[contenteditable="true"]:not([data-content-editable-void])');
+				      if (ce) {
+				        // Prefer Notion H1 title
+				        const h1 = ce.querySelector('h1[contenteditable="true"]') || ce.closest('h1[contenteditable="true"]');
+				        if (h1 && h1.focus) {
+				          h1.focus();
+				          return true;
+				        }
+				        if (ce.focus) {
+				          ce.focus();
+				          return true;
+				        }
+				      }
+				    }
+				    // Verify active element is a real editable
+				    const isReal = active.getAttribute('contenteditable') === 'true' || 
+				                   active.tagName === 'INPUT' || 
+				                   active.tagName === 'TEXTAREA';
+				    return isReal;
+				  }
+				""")
+				if fixed:
+					print(f"[DEBUG TYPE] ✓ Focus redirected successfully")
+					pg.wait_for_timeout(100)
+				else:
+					print(f"[DEBUG TYPE] Focus fix returned false")
+
+				# Notion handoff: if we intend to type into body (selector mentions body/start typing)
+				# but focus is on H1 title, press Enter to create first paragraph in body.
+				try:
+					selector_l = (selector or '').lower()
+					if (active_info and (active_info.get('tagName') or '').upper() == 'H1') and \
+					   ('body editor' in selector_l or 'start typing' in selector_l):
+						print(f"[DEBUG TYPE] Handoff: H1 focused but body typing requested, pressing Enter")
+						pg.keyboard.press('Enter')
+						pg.wait_for_timeout(80)
+				except Exception as e_handoff:
+					print(f"[DEBUG TYPE] Handoff check failed: {e_handoff}")
+			except Exception as e:
+				print(f"[DEBUG TYPE] Focus fix failed: {e}")
+				import traceback
+				traceback.print_exc()
 				pass
+			
 			# Select-all then type to ensure we replace any placeholder/title content
 			try:
 				pg.keyboard.press('Control+a')
@@ -382,9 +593,38 @@ def observe_route():
       );
     }
     const results = [];
-    const containers = [
-      ...document.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [aria-modal="true"], [data-state="open"]'),
-    ];
+
+    // Helper: collect nodes from document and open shadow roots
+    function collectAll(root) {
+      const arr = [root];
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      let node = walker.currentNode;
+      while (node) {
+        const el = node;
+        // Include open shadow roots
+        if (el.shadowRoot) {
+          arr.push(el.shadowRoot);
+        }
+        node = walker.nextNode();
+      }
+      return arr;
+    }
+
+    const roots = collectAll(document);
+    const containers = [];
+    for (const r of roots) {
+      try {
+        r.querySelectorAll('[role="menu"], [role="listbox"], [role="dialog"], [aria-modal="true"], [data-state="open"], div[style*="position: fixed" i]').forEach(el => containers.push(el));
+        // Also consider expanded popover triggers as containers
+        r.querySelectorAll('[aria-expanded="true"]').forEach(el => {
+          const popupId = el.getAttribute('aria-controls');
+          if (popupId) {
+            const popup = document.getElementById(popupId);
+            if (popup) containers.push(popup);
+          }
+        });
+      } catch (e) {}
+    }
     const candidates = new Set();
     for (const root of containers) {
       if (!visible(root)) continue;
@@ -423,6 +663,7 @@ def observe_route():
 		})
 
 	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
+	# PRIORITY: Find real contenteditables FIRST, explicitly avoiding trap spans
 	try:
 		ce_items = _page.evaluate("""
 		  () => {
@@ -436,24 +677,61 @@ def observe_route():
 		        rect.width > 0 && rect.height > 0
 		      );
 		    }
-		    const results = [];
-		    const selectors = [
-		      '[contenteditable="true"][role="textbox"]',
-		      '#contenteditable-root[contenteditable="true"]',
-		      '[data-content-root="true"] [contenteditable="true"]'
-		    ];
-		    const seen = new Set();
-		    for (const sel of selectors) {
-		      document.querySelectorAll(sel).forEach(el => {
-		        if (!visible(el)) return;
-		        const key = sel + '|' + (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
-		        if (seen.has(key)) return;
-		        seen.add(key);
-		        const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || 'Body editor').trim();
-		        results.push({ role: 'textbox', name, selector: sel });
-		      });
+		    function isTrap(el) {
+		      return el.hasAttribute('data-content-editable-root-tiny-selection-trap') ||
+		             el.closest('[data-content-editable-root-tiny-selection-trap]') !== null;
 		    }
-		    return results;
+		    const results = [];
+		    const seen = new Set();
+		    
+		    // PRIORITY 1: Notion page title H1 (most specific, highest priority)
+		    document.querySelectorAll('div.notion-page-block h1[contenteditable="true"]').forEach(el => {
+		      if (!visible(el)) return;
+		      if (isTrap(el)) return;
+		      const placeholder = el.getAttribute('placeholder') || 'New page';
+		      const key = 'notion-title|' + placeholder;
+		      if (seen.has(key)) return;
+		      seen.add(key);
+		      results.push({ 
+		        role: 'textbox', 
+		        name: 'Page title', 
+		        selector: 'div.notion-page-block h1[contenteditable="true"]',
+		        priority: 1
+		      });
+		    });
+		    
+		    // PRIORITY 2: Direct contenteditable elements (exclude traps explicitly)
+		    document.querySelectorAll('[contenteditable="true"]').forEach(el => {
+		      if (!visible(el)) return;
+		      if (isTrap(el)) return;
+		      if (el.hasAttribute('data-content-editable-void')) return;
+		      // Skip if already added as Notion title
+		      if (el.closest('div.notion-page-block h1')) return;
+		      
+		      const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
+		      const insideBody = !!el.closest('.notion-page-content');
+		      const name = insideBody ? 'Body editor' : (placeholder || 'Start typing to edit text');
+		      const key = 'ce|' + name;
+		      if (seen.has(key)) return;
+		      seen.add(key);
+		      
+		      // Use the most specific selector possible
+		      let selector = '[contenteditable="true"]';
+		      if (el.hasAttribute('role') && el.getAttribute('role') === 'textbox') {
+		        selector = '[contenteditable="true"][role="textbox"]';
+		      }
+		      
+		      results.push({ 
+		        role: 'textbox', 
+		        name: name, 
+		        selector: selector,
+		        priority: 2
+		      });
+		    });
+		    
+		    // Sort by priority (lower number = higher priority)
+		    results.sort((a, b) => (a.priority || 99) - (b.priority || 99));
+		    return results.map(r => ({ role: r.role, name: r.name, selector: r.selector }));
 		  }
 		""") or []
 
@@ -473,64 +751,14 @@ def observe_route():
 				'label': name,
 				'selector': selector_str,
 			})
-	except Exception:
+			print(f"[DEBUG OBSERVE] Added contenteditable: role={role}, name={name}, selector={selector_str}")
+	except Exception as e:
+		print(f"[DEBUG OBSERVE] Contenteditable discovery failed: {e}")
+		import traceback
+		traceback.print_exc()
 		pass
 
     # Removed app-specific injections to keep behavior fully dynamic
-
-	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
-	try:
-		ce_items = _page.evaluate("""
-		  () => {
-		    function visible(el) {
-		      const style = window.getComputedStyle(el);
-		      const rect = el.getBoundingClientRect();
-		      return (
-		        style &&
-		        style.visibility !== 'hidden' &&
-		        style.display !== 'none' &&
-		        rect.width > 0 && rect.height > 0
-		      );
-		    }
-		    const results = [];
-		    const selectors = [
-		      '[contenteditable="true"][role="textbox"]',
-		      '#contenteditable-root[contenteditable="true"]',
-		      '[data-content-root="true"] [contenteditable="true"]'
-		    ];
-		    const seen = new Set();
-		    for (const sel of selectors) {
-		      document.querySelectorAll(sel).forEach(el => {
-		        if (!visible(el)) return;
-		        const key = sel + '|' + (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '');
-		        if (seen.has(key)) return;
-		        seen.add(key);
-		        const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || 'Body editor').trim();
-		        results.push({ role: 'textbox', name, selector: sel });
-		      });
-		    }
-		    return results;
-		  }
-		""") or []
-
-		seen_ce = { (item['role'], item['label']) for item in interactables }
-		for it in ce_items:
-			role = it.get('role')
-			name = it.get('name') or ''
-			selector_str = it.get('selector') or '[contenteditable="true"]'
-			if not role or not name:
-				continue
-			key = (role, name)
-			if key in seen_ce:
-				continue
-			seen_ce.add(key)
-			interactables.append({
-				'role': role,
-				'label': name,
-				'selector': selector_str,
-			})
-	except Exception:
-		pass
 
 
 
@@ -568,6 +796,23 @@ def observe_route():
 		""")
 	except Exception:
 		focused = None
+
+	# Notion editors snapshot (diagnostics: title and body preview)
+	try:
+		notion_editors = _page.evaluate("""
+		  () => {
+		    function txt(n){ try { return (n?.innerText || '').trim(); } catch(e){ return ''; } }
+		    const titleEl = document.querySelector('div.notion-page-block h1[contenteditable="true"]');
+		    const titleText = txt(titleEl).slice(0, 140);
+		    const bodyEl = document.querySelector('.notion-page-content [contenteditable="true"]:not([data-content-editable-void])');
+		    const bodyText = txt(bodyEl).slice(0, 200);
+		    return { hasTitle: !!titleEl, titleText, hasBody: !!bodyEl, bodyText };
+		  }
+		""")
+		if notion_editors:
+			print(f"[DEBUG OBSERVE] Notion editors → title='{notion_editors.get('titleText')}', bodyPreview='{notion_editors.get('bodyText')}'")
+	except Exception:
+		notion_editors = None
 	
 	# Capture error messages, alerts, and validation messages
 	error_messages = _page.evaluate("""
@@ -656,7 +901,8 @@ def observe_route():
 		'hint': hint,
 		'errors': error_messages,
 		'frames': frames_info,
-		'focused': focused
+		'focused': focused,
+		'notionEditors': notion_editors
 	})
 
 
@@ -748,7 +994,7 @@ def act_route():
 			for sel in iter_selectors(data):
 				try:
 					_robust_click(ctx, sel)
-					(_page if ctx is _page else ctx.page).wait_for_timeout(700)
+					(_page if ctx is _page else ctx.page).wait_for_timeout(1000)
 					return jsonify({ 'ok': True })
 				except Exception as e:
 					last_err = str(e)

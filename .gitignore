@@ -12,3 +12,4 @@ __pycache__/
 *.pywz
 *.pyzw
 chrome-user/
+auth/
