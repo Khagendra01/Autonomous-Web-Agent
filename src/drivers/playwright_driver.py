@@ -325,71 +325,29 @@ def _robust_type(ctx, selector: str, text: str) -> None:
 						    ? el 
 						    : el.closest('[data-content-editable-root-tiny-selection-trap]');
 						  if (!trap) return null;
-						  const ce = trap.closest('[contenteditable="true"]:not([data-content-editable-void])');
+						  const ce = trap.closest('[contenteditable=\"true\"]:not([data-content-editable-void])');
 						  if (!ce) return null;
-						  // Prefer Notion H1 title
-						  const h1 = ce.querySelector('h1[contenteditable="true"]') || ce.closest('h1[contenteditable="true"]');
-						  if (h1) {
-						    return { type: 'h1', tagName: h1.tagName, placeholder: h1.getAttribute('placeholder') || '' };
-						  }
 						  return { type: 'ce', tagName: ce.tagName };
 						}
 					""", el_handle)
 					
 					print(f"[DEBUG TYPE] CE info: {json.dumps(ce_info)}")
 					
-					if ce_info and ce_info.get('type') == 'h1':
-						loc = ctx.locator('div.notion-page-block h1[contenteditable="true"]').first
-						print(f"[DEBUG TYPE] ✓ Normalized trap to Notion H1 title")
-					elif ce_info and ce_info.get('type') == 'ce':
+					if ce_info and ce_info.get('type') == 'ce':
 						# Find the specific contenteditable parent
 						try:
 							ce_handle = ctx.evaluate_handle("el => el.closest('[contenteditable=\"true\"]:not([data-content-editable-void])')", el_handle)
 							if ce_handle:
-								loc = ctx.locator('[contenteditable="true"]').filter(has=ce_handle).first
+								loc = ctx.locator('[contenteditable=\"true\"]').filter(has=ce_handle).first
 								print(f"[DEBUG TYPE] ✓ Normalized trap to parent contenteditable")
 							else:
-								loc = ctx.locator('[contenteditable="true"]:not([data-content-editable-void])').first
+								loc = ctx.locator('[contenteditable=\"true\"]:not([data-content-editable-void])').first
 								print(f"[DEBUG TYPE] ✓ Using fallback contenteditable selector")
 						except Exception as e2:
-							loc = ctx.locator('[contenteditable="true"]:not([data-content-editable-void])').first
+							loc = ctx.locator('[contenteditable=\"true\"]:not([data-content-editable-void])').first
 							print(f"[DEBUG TYPE] ✓ Exception fallback: {e2}")
 				else:
 					print(f"[DEBUG TYPE] Not a trap, using original selector")
-					# If this is the generic Notion body prompt but pointing to the header container, redirect to page content editor
-					try:
-						if el_info and (el_info.get('ariaLabel') or '').strip() == 'Start typing to edit text':
-							# Prefer Notion page title H1 if present and empty; else force body editor when title already set
-							title_loc = ctx.locator('div.notion-page-block h1[contenteditable="true"]').first
-							used_title_redirect = False
-							try:
-								if title_loc.count() > 0:
-									is_empty = False
-									try:
-										is_empty = ctx.evaluate('el => !el || (el.innerText || "\n").trim().length === 0', title_loc.element_handle(timeout=500))
-									except Exception:
-										pass
-									if is_empty:
-										loc = title_loc
-										used_title_redirect = True
-										print(f"[DEBUG TYPE] ✓ Redirected to Notion H1 page title (empty)")
-							except Exception:
-								pass
-
-							if not used_title_redirect:
-								# Title exists and likely non-empty; force body editor under page content
-								candidate = ctx.locator('.notion-page-content [contenteditable="true"]:not([data-content-editable-void])').first
-								if candidate.count() > 0:
-									loc = candidate
-									print(f"[DEBUG TYPE] ✓ Redirected to main page content editor under .notion-page-content")
-								else:
-									# Fallback: any visible contenteditable that is not inside the header section
-									candidate = ctx.locator('[contenteditable="true"]').filter(has_not=ctx.locator('div[role="banner"], header, .notion-frame')).first
-									if candidate.count() > 0:
-										loc = candidate
-										print(f"[DEBUG TYPE] ✓ Redirected to non-header contenteditable")
-					except Exception as e3:
-						print(f"[DEBUG TYPE] Heuristic redirect failed: {e3}")
 		except Exception as e:
 			print(f"[DEBUG TYPE] Trap validation failed: {e}")
 			import traceback
@@ -467,17 +425,7 @@ def _robust_type(ctx, selector: str, text: str) -> None:
 				else:
 					print(f"[DEBUG TYPE] Focus fix returned false")
 
-				# Notion handoff: if we intend to type into body (selector mentions body/start typing)
-				# but focus is on H1 title, press Enter to create first paragraph in body.
-				try:
-					selector_l = (selector or '').lower()
-					if (active_info and (active_info.get('tagName') or '').upper() == 'H1') and \
-					   ('body editor' in selector_l or 'start typing' in selector_l):
-						print(f"[DEBUG TYPE] Handoff: H1 focused but body typing requested, pressing Enter")
-						pg.keyboard.press('Enter')
-						pg.wait_for_timeout(80)
-				except Exception as e_handoff:
-					print(f"[DEBUG TYPE] Handoff check failed: {e_handoff}")
+				# Removed app-specific handoff logic
 			except Exception as e:
 				print(f"[DEBUG TYPE] Focus fix failed: {e}")
 				import traceback
@@ -662,7 +610,7 @@ def observe_route():
 			'selector': f'role={role}[name="{name}"]',
 		})
 
-	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
+	# Discover visible contenteditable editors and add as interactables (generic)
 	# PRIORITY: Find real contenteditables FIRST, explicitly avoiding trap spans
 	try:
 		ce_items = _page.evaluate("""
@@ -683,34 +631,13 @@ def observe_route():
 		    }
 		    const results = [];
 		    const seen = new Set();
-		    
-		    // PRIORITY 1: Notion page title H1 (most specific, highest priority)
-		    document.querySelectorAll('div.notion-page-block h1[contenteditable="true"]').forEach(el => {
-		      if (!visible(el)) return;
-		      if (isTrap(el)) return;
-		      const placeholder = el.getAttribute('placeholder') || 'New page';
-		      const key = 'notion-title|' + placeholder;
-		      if (seen.has(key)) return;
-		      seen.add(key);
-		      results.push({ 
-		        role: 'textbox', 
-		        name: 'Page title', 
-		        selector: 'div.notion-page-block h1[contenteditable="true"]',
-		        priority: 1
-		      });
-		    });
-		    
-		    // PRIORITY 2: Direct contenteditable elements (exclude traps explicitly)
+		    // Direct contenteditable elements (exclude traps explicitly)
 		    document.querySelectorAll('[contenteditable="true"]').forEach(el => {
 		      if (!visible(el)) return;
 		      if (isTrap(el)) return;
 		      if (el.hasAttribute('data-content-editable-void')) return;
-		      // Skip if already added as Notion title
-		      if (el.closest('div.notion-page-block h1')) return;
-		      
 		      const placeholder = el.getAttribute('placeholder') || el.getAttribute('aria-label') || '';
-		      const insideBody = !!el.closest('.notion-page-content');
-		      const name = insideBody ? 'Body editor' : (placeholder || 'Start typing to edit text');
+		      const name = placeholder || 'Text editor';
 		      const key = 'ce|' + name;
 		      if (seen.has(key)) return;
 		      seen.add(key);
@@ -797,23 +724,8 @@ def observe_route():
 	except Exception:
 		focused = None
 
-	# Notion editors snapshot (diagnostics: title and body preview)
-	try:
-		notion_editors = _page.evaluate("""
-		  () => {
-		    function txt(n){ try { return (n?.innerText || '').trim(); } catch(e){ return ''; } }
-		    const titleEl = document.querySelector('div.notion-page-block h1[contenteditable="true"]');
-		    const titleText = txt(titleEl).slice(0, 140);
-		    const bodyEl = document.querySelector('.notion-page-content [contenteditable="true"]:not([data-content-editable-void])');
-		    const bodyText = txt(bodyEl).slice(0, 200);
-		    return { hasTitle: !!titleEl, titleText, hasBody: !!bodyEl, bodyText };
-		  }
-		""")
-		if notion_editors:
-			print(f"[DEBUG OBSERVE] Notion editors → title='{notion_editors.get('titleText')}', bodyPreview='{notion_editors.get('bodyText')}'")
-	except Exception:
-		notion_editors = None
-	
+	# Removed app-specific diagnostics
+
 	# Capture error messages, alerts, and validation messages
 	error_messages = _page.evaluate("""
 	  () => {
@@ -901,8 +813,7 @@ def observe_route():
 		'hint': hint,
 		'errors': error_messages,
 		'frames': frames_info,
-		'focused': focused,
-		'notionEditors': notion_editors
+		'focused': focused
 	})
 
 

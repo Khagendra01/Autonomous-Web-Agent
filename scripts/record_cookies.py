@@ -13,6 +13,7 @@ def main():
 Examples:
   python -m scripts.record_cookies                                    # Default: Linear
   python -m scripts.record_cookies --app github --url https://github.com
+  python -m scripts.record_cookies --app asana --url https://app.asana.com
   python -m scripts.record_cookies --app youtube --url https://www.youtube.com
   python -m scripts.record_cookies --app gmail --url https://mail.google.com
   python -m scripts.record_cookies --app notion --url https://notion.so

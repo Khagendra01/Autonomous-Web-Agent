@@ -1,5 +1,6 @@
-python -m src.agents.runner "create a new page in notion and write a content Softlight Engineering Take-Home Assignment"
-python -m src.agents.runner "change the setting to dark mode in notion"
+python -m src.agents.runner "go to asana and create a new task called Web Agent Automation and assign to kgen"
+python -m src.agents.runner "invite kgen4295@gmail in the asana"
+python -m src.agents.runner "change the task status of Draft Project brief to complete in asana"
 
 python -m src.agents.runner "create a new project called Softlight in linear"
 python -m src.agents.runner "Write a new issue Make Web Agent B to project Softlight in linear and assign to kgen"

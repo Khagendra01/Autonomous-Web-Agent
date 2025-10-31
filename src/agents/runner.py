@@ -218,9 +218,6 @@ Examples:
   # Create a project in Linear
   python -m src.agents.runner "Create a new project in Linear"
   
-  # Filter a Notion database
-  python -m src.agents.runner "Open a database and apply a filter in Notion"
-  
   # Create a GitHub issue
   python -m src.agents.runner "Create a new issue in this GitHub repo"
 
