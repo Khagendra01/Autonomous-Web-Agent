@@ -1,6 +1,6 @@
 from pathlib import Path
 import json, time
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 
 class RunStorage:
@@ -15,6 +15,13 @@ class RunStorage:
             'timestamp': ts,
             'states': []
         }
+        self.log_file_path: Optional[Path] = None
+    
+    def get_log_file_path(self) -> Path:
+        """Get the path to the log file for this run."""
+        if self.log_file_path is None:
+            self.log_file_path = self.root / 'run.log'
+        return self.log_file_path
 
     def save_screenshot(self, image_bytes: bytes, name: str) -> str:
         p = self.root / 'screens' / name

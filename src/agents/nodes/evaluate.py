@@ -4,6 +4,7 @@ import re
 
 from ..state import AgentState
 from .common import client
+from ..utils.logger import get_logger
 
 
 def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -91,9 +92,22 @@ def _extract_required_values(goal: str, instruction: str) -> List[str]:
 
 def check_goal_node(state: AgentState) -> Dict[str, Any]:
     """Evaluate whether the goal is complete using LLM with robust, app-agnostic criteria."""
-    print(f"\n[CHECK GOAL] Evaluating goal completion")
-    print(f"  Goal: {state.get('goal', '')}")
-    print(f"  Steps taken: {state.get('step_count', 0)}")
+    # Determine which goal we're checking (current_goal if multiple goals exist)
+    multiple_goals = state.get('multiple_goal')
+    current_goal = state.get('current_goal')
+    active_goal = current_goal if (multiple_goals and current_goal) else state.get('goal', '')
+    
+    logger = get_logger()
+    
+    logger.info(f"\n[CHECK GOAL] Evaluating goal completion")
+    if multiple_goals and current_goal:
+        goal_index = multiple_goals.index(current_goal) + 1 if current_goal in multiple_goals else 1
+        logger.info(f"  Goal {goal_index}/{len(multiple_goals)}: {active_goal}")
+        if len(multiple_goals) > goal_index:
+            logger.info(f"  Remaining goals: {', '.join(multiple_goals[goal_index:])}")
+    else:
+        logger.info(f"  Goal: {active_goal}")
+    logger.info(f"  Steps taken: {state.get('step_count', 0)}")
 
     model_name = state.get('llm_model') or "gpt-4o"
     recent_actions = (state.get('action_history') or [])[-5:]
@@ -110,12 +124,12 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
         })
     
     # Pre-check: If goal requires entering/creating a specific value, verify it was typed
-    goal = state.get('goal', '')
+    # Use active_goal (current_goal if multiple goals exist, otherwise goal)
     instruction = state.get('instruction', '')
-    required_values = _extract_required_values(goal, instruction)
+    required_values = _extract_required_values(active_goal, instruction)
     
     if required_values:
-        print(f"  Required values to verify: {required_values}")
+        logger.info(f"  Required values to verify: {required_values}")
         # Check if any type action matches the required values
         typed_values = [a.get('text', '') for a in action_details if a.get('type') == 'type']
         found_values = []
@@ -128,13 +142,13 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
         
         missing_values = [v for v in required_values if v not in found_values]
         if missing_values:
-            print(f"  ⚠️  Warning: Required values not entered yet: {missing_values}")
-            print(f"  Typed values in history: {typed_values}")
+            logger.warning(f"  ⚠️  Warning: Required values not entered yet: {missing_values}")
+            logger.info(f"  Typed values in history: {typed_values}")
 
     last_action = action_details[-1] if action_details else None
     if last_action:
         text_part = f" with text '{last_action['text']}'" if last_action.get('text') else ""
-        print(f"  Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
+        logger.info(f"  Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
 
     # Build verification note for the prompt
     verification_note = ""
@@ -152,10 +166,28 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
         else:
             verification_note = f"\n\nVERIFICATION: Required values {required_values} were found in typed actions. This is good evidence of progress."
 
+    # Build goal context for prompt
+    goal_context = active_goal
+    if multiple_goals and current_goal:
+        goal_index = multiple_goals.index(current_goal) + 1 if current_goal in multiple_goals else 1
+        goal_context = f"[Goal {goal_index}/{len(multiple_goals)}] {active_goal}"
+        if len(multiple_goals) > goal_index:
+            remaining = ', '.join(multiple_goals[goal_index:])
+            goal_context += f"\nNote: This is part of a sequence. After completing this goal, remaining goals are: {remaining}"
+    
+    # Always ask for prioritized roles when goal is not reached (will be conditionally included)
+    prioritized_roles_instruction = """
+7) IMPORTANT: If the goal is NOT reached, analyze what types of UI elements (roles) are most critical to interact with next. For example:
+   - If missing input data: prioritize 'textbox' or 'combobox'
+   - If need to navigate: prioritize 'link' or 'button'
+   - If need to select option: prioritize 'option', 'menuitem', or 'combobox'
+   - If need to submit: prioritize 'button'
+   Return a list of role names (lowercase) in "prioritized_roles" that should be boosted in the next iteration."""
+    
     prompt = f"""Assess whether the user's goal has been completed based on the action history and current state.
 
 Context:
-- Goal: {state.get('goal', '')}
+- Goal: {goal_context}
 - Instruction: {state.get('instruction', '')}
 - Current URL: {state.get('current_url', '')}
 - Steps Taken: {state.get('step_count', 0)}
@@ -176,14 +208,15 @@ Evaluation principles (generic, app-agnostic):
 3) CRITICAL: If the goal requires entering/creating a specific named value (e.g., "create project called X"), you MUST see a "type" action with that value in the action history. Do NOT assume completion just because the value appears in UI elements - it must have been explicitly typed.
 4) Consider typed values matching goal parameters as strong evidence of progress/completion.
 5) Avoid over-caution: many modern apps auto-save; absence of explicit submit does not always imply incompletion.
-6) Provide a concise, evidence-based rationale referencing specific actions.
+6) Provide a concise, evidence-based rationale referencing specific actions.{prioritized_roles_instruction}
 
 Return ONLY valid JSON:
 {{
   "goal_reached": true/false,
   "reasoning": "short evidence-based explanation",
   "confidence": 0.0-1.0,
-  "missing_steps": ["optional list of next steps if not complete"]
+  "missing_steps": ["optional list of next steps if not complete"],
+  "prioritized_roles": ["role1", "role2", ...]  // Only if goal_reached=false: list of UI roles (e.g., "textbox", "button", "link") to prioritize in next iteration
 }}"""
 
     try:
@@ -196,7 +229,7 @@ Return ONLY valid JSON:
         )
         content = (response.choices[0].message.content or "").strip()
     except Exception as e:
-        print(f"  Evaluation LLM call failed: {e}")
+        logger.error(f"  Evaluation LLM call failed: {e}")
         return {'goal_reached': False}
 
     result = _extract_json_payload(content) or {}
@@ -207,6 +240,20 @@ Return ONLY valid JSON:
     except Exception:
         confidence = 0.5
     missing_steps = result.get('missing_steps', []) or []
+    
+    # Extract prioritized roles if goal is not reached
+    prioritized_roles = []
+    if not goal_reached:
+        prioritized_roles_raw = result.get('prioritized_roles', [])
+        if isinstance(prioritized_roles_raw, list):
+            # Normalize role names to lowercase and filter valid roles
+            valid_roles = {'button', 'textbox', 'combobox', 'link', 'menuitem', 'option', 'checkbox', 'radio', 'slider', 'tab', 'switch'}
+            prioritized_roles = [r.lower().strip() for r in prioritized_roles_raw if isinstance(r, str) and r.lower().strip() in valid_roles]
+        
+        if prioritized_roles:
+            logger.info(f"  🎯 Prioritized roles for next iteration: {', '.join(prioritized_roles)}")
+        else:
+            logger.info(f"  (No prioritized roles suggested)")
 
     # Final safety check: if required values exist and weren't typed, override to incomplete
     if required_values and goal_reached:
@@ -219,21 +266,57 @@ Return ONLY valid JSON:
                 missing_values.append(req_val)
         
         if missing_values:
-            print(f"  ⚠️  OVERRIDE: Goal marked complete by LLM, but required values not typed: {missing_values}")
-            print(f"  Forcing goal_reached=False due to missing typed values")
+            logger.warning(f"  ⚠️  OVERRIDE: Goal marked complete by LLM, but required values not typed: {missing_values}")
+            logger.warning(f"  Forcing goal_reached=False due to missing typed values")
             goal_reached = False
             reasoning = f"Required value(s) '{', '.join(missing_values)}' must be entered but were not found in action history. " + reasoning
             confidence = min(confidence, 0.3)  # Lower confidence
 
-    print(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
+    logger.info(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
     if reasoning:
-        print(f"  Reasoning: {reasoning}")
+        logger.info(f"  Reasoning: {reasoning}")
     if missing_steps:
         try:
-            print(f"  Missing steps: {', '.join(map(str, missing_steps))}")
+            logger.info(f"  Missing steps: {', '.join(map(str, missing_steps))}")
         except Exception:
-            print("  Missing steps: (unprintable)")
+            logger.info("  Missing steps: (unprintable)")
 
-    return { 'goal_reached': goal_reached }
+    # Handle multiple goals: if current goal is complete, advance to next goal
+    result_updates = {'goal_reached': goal_reached}
+    
+    # Store prioritized roles if goal is not reached (clear if reached)
+    if goal_reached:
+        result_updates['prioritized_roles'] = []  # Clear when goal is reached
+    elif prioritized_roles:
+        result_updates['prioritized_roles'] = prioritized_roles  # Set new prioritized roles
+    
+    if multiple_goals and current_goal and goal_reached:
+        try:
+            current_index = multiple_goals.index(current_goal)
+            if current_index < len(multiple_goals) - 1:
+                # Advance to next goal
+                next_goal = multiple_goals[current_index + 1]
+                logger.info(f"\n  ✓ Goal {current_index + 1}/{len(multiple_goals)} completed!")
+                logger.info(f"  → Advancing to next goal {current_index + 2}/{len(multiple_goals)}: {next_goal}")
+                
+                # Keep only the last action_history entry, remove all others
+                action_history = state.get('action_history') or []
+                if len(action_history) > 0:
+                    trimmed_history = [action_history[-1]]  # Keep only last entry
+                    result_updates['action_history'] = trimmed_history
+                    logger.info(f"  → Cleared action history, keeping only last entry (total entries removed: {len(action_history) - 1})")
+                
+                result_updates['current_goal'] = next_goal
+                # Don't mark overall goal as reached until all goals are done
+                result_updates['goal_reached'] = False
+            else:
+                # All goals are complete
+                logger.info(f"\n  ✓ All {len(multiple_goals)} goals completed!")
+                result_updates['goal_reached'] = True
+        except (ValueError, IndexError):
+            # current_goal not found in multiple_goals, keep as is
+            pass
+    
+    return result_updates
 
 
