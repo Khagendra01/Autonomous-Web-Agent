@@ -100,18 +100,25 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     screenshot_resp = requests.get(f"{DRIVER_URL}/screenshot")
     screenshot_bytes = screenshot_resp.content
     
+    # Cap interactables to avoid excessive token usage downstream
+    all_interactables = data.get('interactables') or []
+    capped_interactables = all_interactables[:200]
+
     # Update state
     updates = {
         'current_url': data['url'],
         'dom_snapshot': data['a11y'],
-        'interactable_elements': data['interactables'],
+        'interactable_elements': capped_interactables,
         'errors': data.get('errors') or [],
         'screenshot_bytes': screenshot_bytes,
         'screenshots': state['screenshots'] + [screenshot_bytes],
     }
     
     print(f"  URL: {data['url']}")
-    print(f"  Found {len(data['interactables'])} interactable elements")
+    if len(all_interactables) > 200:
+        print(f"  Found {len(all_interactables)} interactable elements (capped to 200)")
+    else:
+        print(f"  Found {len(all_interactables)} interactable elements")
     if data.get('errors'):
         print(f"  ⚠️  Errors detected: {data['errors']}")
     

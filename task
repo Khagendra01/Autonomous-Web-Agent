@@ -8,5 +8,5 @@ python -m src.agents.runner "Delete that project Happy in linear"
 python -m src.agents.runner "Go to all issues and filter by inprogess and change the status of clean up ui to done in linear"
 
 
-go to ubereats and find the price of chicken wings in nearest restaurant
-go to youtube and comment hi in the video Hey Jude by beatles
+python -m src.agents.runner "go to ubereats and find the price of chicken wings in nearest restaurant"
+python -m src.agents.runner "go to youtube and like the video Hey Jude by beatles"

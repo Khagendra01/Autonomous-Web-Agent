@@ -2,3 +2,12 @@ This browser or app may not be secure. Learn more
 Try using a different browser. If you’re already using a supported browser, you can try again to sign in.
 
 chrome --user-data-dir="C:\Users\Khage\Desktop\Autonomous-Web-Agent\chrome-user"
+
+
+Short answer: LLMs can reason about patterns, but they can’t reliably change the browser’s focus model. You need generic driver primitives to let the LLM direct focus, then type.
+What I did now:
+Added a generic action the LLM can call: type=focus_contenteditable with optional selector. It focuses the nearest visible contenteditable (no Notion-specific logic).
+Kept observe exposing activeElement details so the LLM can detect traps and then call focus_contenteditable.
+How this avoids “hardcoding”:
+No app names, no specific attributes required in prompts.
+LLM decides when to call focus_contenteditable; the driver just executes a generic operation.

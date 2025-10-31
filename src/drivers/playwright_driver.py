@@ -4,6 +4,8 @@ from playwright.sync_api import sync_playwright, Page, BrowserContext
 import re
 import json
 import os
+import time
+from pathlib import Path
 
 
 app = Flask(__name__)
@@ -12,6 +14,21 @@ _pw = None
 _browser = None
 _context: BrowserContext | None = None
 _page: Page | None = None
+
+# Debug mode: set DEBUG=1 to save element crops and extra logs during actions
+DEBUG = str(os.environ.get('DEBUG') or '').strip().lower() in ['1', 'true', 'yes', 'on']
+
+def _debug_save_locator(locator, prefix: str) -> None:
+	if not DEBUG:
+		return
+	try:
+		Path('captures/debug').mkdir(parents=True, exist_ok=True)
+		ts = time.strftime('%Y%m%d-%H%M%S')
+		path = f"captures/debug/{prefix}-{ts}.png"
+		locator.screenshot(path=path)
+		print(f"[DEBUG] Saved locator screenshot: {path}")
+	except Exception as e:
+		print(f"[DEBUG] Failed to save locator screenshot: {e}")
 
 
 def to_interactables(a11y: dict) -> list[dict]:
@@ -164,6 +181,7 @@ def _robust_click(ctx, selector: str) -> None:
             locator.scroll_into_view_if_needed(timeout=1000)
         except Exception:
             pass
+        _debug_save_locator(locator, f"before-click-{re.sub('[^a-zA-Z0-9_-]+','_',selector)[:60]}")
         locator.click(timeout=12000)
         (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(200)
         return
@@ -174,6 +192,7 @@ def _robust_click(ctx, selector: str) -> None:
             # 1) Dismiss overlays and retry normal click
             _dismiss_overlays(ctx.page if hasattr(ctx, 'page') else ctx)
             try:
+                _debug_save_locator(locator, f"retry-click-{re.sub('[^a-zA-Z0-9_-]+','_',selector)[:60]}")
                 locator.click(timeout=3000)
                 (ctx.page if hasattr(ctx, 'page') else ctx).wait_for_timeout(150)
                 return
@@ -212,145 +231,87 @@ def _robust_click(ctx, selector: str) -> None:
 
 
 
-def _robust_type(page: Page, selector: str, text: str) -> None:
-	loc = page.locator(selector).first
-	loc.wait_for(state='visible', timeout=5000)
-	
-	# Notion-specific handling: clear existing content first for contenteditable
-	# Check if this looks like Notion (has notion-specific classes or attributes)
-	is_notion = 'notion' in page.url.lower() or page.locator('[data-content-root="true"]').count() > 0
-	
-	# Try direct fill first
+def _robust_type(ctx, selector: str, text: str) -> None:
+	pg = (ctx.page if hasattr(ctx, 'page') else ctx)
+	# 1) Try target selector directly (don't abort if not visible)
+	loc = None
 	try:
-		loc.fill(str(text))
-		page.wait_for_timeout(200)
-		# Verify text was actually set (for input/textarea elements)
+		loc = ctx.locator(selector).first
+		_debug_save_locator(loc, f"before-type-{re.sub('[^a-zA-Z0-9_-]+','_',selector)[:60]}")
 		try:
-			is_input = loc.evaluate('el => el.tagName === "INPUT" || el.tagName === "TEXTAREA"')
-			if is_input:
-				current_value = loc.input_value()
-			else:
-				current_value = loc.inner_text()
-			if str(text).strip() in str(current_value).strip():
-				return
+			# Prefer fill when possible
+			loc.fill(str(text))
+			pg.wait_for_timeout(150)
+			return
 		except Exception:
 			pass
-	except Exception:
-		pass
-
-	# Click to focus/expand (e.g., YouTube comment box, Notion editor)
-	try:
-		loc.click(timeout=1500)
-		page.wait_for_timeout(150)
-	except Exception:
 		try:
-			_robust_click(page, selector)
-			page.wait_for_timeout(150)
-		except Exception:
-			pass
-
-	# For Notion: find the contenteditable within the selected element
-	if is_notion:
-		try:
-			# Notion title editor: usually a div with contenteditable="true" inside the selector
-			editable_in_loc = loc.locator('[contenteditable="true"]').first
-			if editable_in_loc.count() > 0:
-				editable_in_loc.wait_for(state='visible', timeout=3000)
-				# Clear existing content for Notion
-				try:
-					editable_in_loc.select_text()
-					page.wait_for_timeout(100)
-				except Exception:
-					pass
-				editable_in_loc.fill(str(text))
-				page.wait_for_timeout(300)
-				# Verify by checking inner text
-				if str(text).strip().lower() in editable_in_loc.inner_text().lower():
-					return
-		except Exception:
-			pass
-
-	# Prefer a visible contenteditable textbox (YouTube uses this, Notion body editor)
-	editable = page.locator('[contenteditable="true"][role="textbox"]').first
-	if editable.count() == 0:
-		editable = page.locator('#contenteditable-root[contenteditable="true"]').first
-	if editable.count() == 0:
-		# For Notion body editor, look for the main contenteditable
-		editable = page.locator('[data-content-root="true"] [contenteditable="true"]').first
-
-	if editable.count() > 0:
-		editable.wait_for(state='visible', timeout=3000)
-		try:
-			# For Notion, clear first if it's the body editor
-			if is_notion:
-				try:
-					editable.select_text()
-					page.wait_for_timeout(100)
-				except Exception:
-					pass
-			# For Notion, many editors ignore fill(). Try keyboard typing after focusing
+			# Focus and type as fallback
 			try:
-				editable.fill(str(text))
-			except Exception:
-				editable.click(timeout=1000)
-				page.wait_for_timeout(100)
-				page.keyboard.type(str(text))
-			page.wait_for_timeout(300)
-			# Verify text was set
-			try:
-				inner = editable.inner_text()
-			except Exception:
-				inner = ''
-			if str(text).strip().lower() in str(inner).lower():
-				return
-		except Exception:
-			try:
-				editable.click(timeout=1000)
-				# Clear any existing content first
-				page.keyboard.press('Control+a')
-				page.wait_for_timeout(100)
-				page.keyboard.type(str(text))
-				page.wait_for_timeout(300)
-				# Verify
-				try:
-					inner2 = editable.inner_text()
-				except Exception:
-					inner2 = ''
-				if str(text).strip().lower() in str(inner2).lower():
-					return
+				loc.scroll_into_view_if_needed(timeout=500)
 			except Exception:
 				pass
-
-	# Last resort: type after focusing original
-	try:
-		loc.click(timeout=1000)
-		page.wait_for_timeout(150)
-		# Clear existing if input field
-		try:
-			page.keyboard.press('Control+a')
-			page.wait_for_timeout(100)
-		except Exception:
-			pass
-		page.keyboard.type(str(text))
-		page.wait_for_timeout(300)
-		# Verify if possible
-		try:
-			is_input = loc.evaluate('el => el.tagName === "INPUT" || el.tagName === "TEXTAREA"')
-			if is_input:
-				current = loc.input_value()
-			else:
-				try:
-					current = loc.inner_text()
-				except Exception:
-					current = ''
-			if str(text).strip().lower() in str(current).lower():
-				return
+			loc.click(timeout=1500)
+			pg.wait_for_timeout(100)
+			# If focus landed on a tiny selection trap span, redirect focus to the nearest real contenteditable
+			try:
+				refocused = ctx.evaluate("""
+				  () => {
+				    const trap = document.activeElement;
+				    if (!trap) return false;
+				    const isTrap = trap.hasAttribute('data-content-editable-root-tiny-selection-trap');
+				    if (!isTrap) return false;
+				    const candidate = trap.closest('[contenteditable="true"]:not([data-content-editable-void])');
+				    if (candidate && typeof candidate.focus === 'function') {
+				      candidate.focus();
+				      return true;
+				    }
+				    return false;
+				  }
+				""")
+				if refocused:
+					pg.wait_for_timeout(50)
+			except Exception:
+				pass
+			# Select-all then type to ensure we replace any placeholder/title content
+			try:
+				pg.keyboard.press('Control+a')
+				pg.wait_for_timeout(50)
+			except Exception:
+				pass
+			pg.keyboard.type(str(text))
+			pg.wait_for_timeout(150)
+			return
 		except Exception:
 			pass
 	except Exception:
+		loc = None
+
+	# 2) Try any visible contenteditable element
+	try:
+		editable = ctx.locator('[contenteditable="true"]').filter(has_text=re.compile(r'.*', re.S)).first
+		if editable.count() == 0:
+			editable = ctx.locator('[contenteditable="true"]').first
+		editable.wait_for(state='visible', timeout=3000)
+		editable.click(timeout=1000)
+		pg.wait_for_timeout(100)
+		pg.keyboard.type(str(text))
+		pg.wait_for_timeout(200)
+		return
+	except Exception:
 		pass
 
-	raise RuntimeError("Failed to type into target or any discovered editor")
+	# 3) Last resort: type at caret in document body
+	try:
+		ctx.locator('body').first.click(timeout=1000)
+		pg.wait_for_timeout(100)
+		pg.keyboard.type(str(text))
+		pg.wait_for_timeout(200)
+		return
+	except Exception:
+		pass
+
+	raise RuntimeError('Failed to type text using generic strategies')
 
 
 @app.post('/init')
@@ -515,18 +476,7 @@ def observe_route():
 	except Exception:
 		pass
 
-	# Notion-specific: ensure a clear 'Body editor' candidate exists when a Notion editor is present
-	try:
-		if ('notion' in (_page.url or '').lower()) or (_page.locator('[data-content-root="true"]').count() > 0):
-			label_set = { item['label'] for item in interactables }
-			if 'Body editor' not in label_set:
-				interactables.append({
-					'role': 'textbox',
-					'label': 'Body editor',
-					'selector': '[data-content-root="true"] [contenteditable="true"]',
-				})
-	except Exception:
-		pass
+    # Removed app-specific injections to keep behavior fully dynamic
 
 	# Discover visible contenteditable editors (e.g., Notion body editor) and add as interactables
 	try:
@@ -600,6 +550,24 @@ def observe_route():
 		]
 	except Exception:
 		frames_info = []
+
+	# Focused element snapshot (helps LLM reason about where typing will go)
+	try:
+		focused = _page.evaluate("""
+		  () => {
+		    const el = document.activeElement;
+		    if (!el) return null;
+		    const role = el.getAttribute('role') || '';
+		    const name = (el.getAttribute('aria-label') || el.getAttribute('placeholder') || '').trim();
+		    const tag = el.tagName?.toLowerCase() || '';
+		    const editable = el.getAttribute('contenteditable') || '';
+		    let text = '';
+		    try { text = (el.innerText || '').slice(0, 200); } catch (e) {}
+		    return { role, name, tag, editable, text };
+		  }
+		""")
+	except Exception:
+		focused = None
 	
 	# Capture error messages, alerts, and validation messages
 	error_messages = _page.evaluate("""
@@ -687,7 +655,8 @@ def observe_route():
 		'interactables': interactables, 
 		'hint': hint,
 		'errors': error_messages,
-		'frames': frames_info
+		'frames': frames_info,
+		'focused': focused
 	})
 
 
@@ -799,6 +768,55 @@ def act_route():
 				except Exception as e:
 					last_err = str(e)
 			return jsonify({ 'ok': False, 'error': last_err or 'type failed' }), 500
+		elif t == 'hover':
+			last_err = None
+			for sel in iter_selectors(data):
+				try:
+					ctx.locator(sel).first.wait_for(state='visible', timeout=5000)
+					ctx.locator(sel).first.hover(timeout=5000)
+					return jsonify({ 'ok': True })
+				except Exception as e:
+					last_err = str(e)
+			return jsonify({ 'ok': False, 'error': last_err or 'hover failed' }), 500
+		elif t == 'press':
+			keys = str(data.get('keys') or '')
+			if not keys:
+				return jsonify({ 'ok': False, 'error': 'keys required' }), 400
+			pg = (_page if ctx is _page else ctx.page)
+			pg.keyboard.press(keys)
+			pg.wait_for_timeout(100)
+			return jsonify({ 'ok': True })
+		elif t == 'wait_for':
+			state = (data.get('state') or 'visible')
+			last_err = None
+			for sel in iter_selectors(data):
+				try:
+					ctx.locator(sel).first.wait_for(state=state, timeout=int(data.get('timeout') or 5000))
+					return jsonify({ 'ok': True })
+				except Exception as e:
+					last_err = str(e)
+			return jsonify({ 'ok': False, 'error': last_err or 'wait_for failed' }), 500
+		elif t == 'await':
+			kind = (data.get('kind') or 'networkidle').lower()
+			pg = (_page if ctx is _page else ctx.page)
+			if kind == 'networkidle':
+				pg.wait_for_load_state('networkidle', timeout=int(data.get('timeout') or 15000))
+				return jsonify({ 'ok': True })
+			elif kind == 'timeout':
+				pg.wait_for_timeout(int(data.get('ms') or 300))
+				return jsonify({ 'ok': True })
+			else:
+				return jsonify({ 'ok': False, 'error': 'unknown await kind' }), 400
+		elif t == 'click_xy':
+			x = data.get('x')
+			y = data.get('y')
+			if x is None or y is None:
+				return jsonify({ 'ok': False, 'error': 'x and y required' }), 400
+			pg = (_page if ctx is _page else ctx.page)
+			pg.mouse.move(float(x), float(y))
+			pg.mouse.click(float(x), float(y))
+			pg.wait_for_timeout(150)
+			return jsonify({ 'ok': True })
 		elif t == 'assert':
 			kind = (data.get('kind') or '').lower()
 			if kind == 'text_present':
