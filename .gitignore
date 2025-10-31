@@ -13,3 +13,4 @@ __pycache__/
 *.pyzw
 chrome-user/
 auth/
+captures/
