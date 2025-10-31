@@ -3,7 +3,6 @@ import json
 import re
 
 from ..state import AgentState, ScoredAction
-from ..utils.dom import summarize_accessibility_tree
 from .common import client
 
 
@@ -258,12 +257,15 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[SCORE] Analyzing actions for goal: {goal}")
 
     # Configurable parameters
-    model_name = state.get('llm_model') or "gpt-5-mini"
-    max_elements = int(state.get('scoring_max_elements') or 30)
+    model_name = state.get('llm_model') or "gpt-4o"
 
     # Prepare context for LLM
-    dom_summary = summarize_accessibility_tree(state.get('dom_snapshot') or {})
     interactables_full = state.get('interactable_elements') or []
+    
+    # Calculate max_elements as 15% of total interactables (rounded to int) if not specified in state
+    total_count = len(interactables_full)
+    default_max = int(round(total_count * 0.15))
+    max_elements = int(state.get('scoring_max_elements') or default_max)
     errors = state.get('errors') or []
     
     # Use intelligent prioritization instead of just taking first N elements

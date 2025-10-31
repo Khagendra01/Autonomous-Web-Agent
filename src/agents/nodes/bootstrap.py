@@ -26,7 +26,7 @@ Return ONLY a JSON object with:
 }}"""
 
     response = client.chat.completions.create(
-        model="gpt-5-mini",
+        model="gpt-4o",
         messages=[
             {"role": "system", "content": "Infer target app and base URL for web automation. Return only valid JSON."},
             {"role": "user", "content": prompt},
