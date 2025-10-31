@@ -46,7 +46,7 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[SCORE] Analyzing actions for goal: {goal}")
 
     # Configurable parameters
-    model_name = state.get('llm_model') or "gpt-5-mini"
+    model_name = state.get('llm_model') or "gpt-4o"
     max_elements = int(state.get('scoring_max_elements') or 80)
 
     # Prepare context for LLM

@@ -432,7 +432,7 @@ If no element matches well, return -1.
 Respond with ONLY a number (the idx or -1)."""
                 
                 response = client.chat.completions.create(
-                    model="gpt-5-mini-mini",
+                    model="gpt-4o",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 

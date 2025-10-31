@@ -33,7 +33,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
     print(f"  Goal: {state.get('goal', '')}")
     print(f"  Steps taken: {state.get('step_count', 0)}")
 
-    model_name = state.get('llm_model') or "gpt-5-mini"
+    model_name = state.get('llm_model') or "gpt-4o"
     recent_actions = (state.get('action_history') or [])[-10:]
 
     # Normalize action details for evaluation

@@ -70,7 +70,7 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
         return { 'next_action': state.get('next_action') }
 
     # Configurable parameters with safe defaults
-    model_name = state.get('llm_model') or "gpt-5-mini"
+    model_name = state.get('llm_model') or "gpt-4o"
     max_candidates = int(state.get('decision_max_candidates') or 15)
 
     # Filter out actions already tried on this URL to reduce loops
