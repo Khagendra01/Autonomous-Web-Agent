@@ -154,20 +154,22 @@ def run_task(
             print(f"  Saved: {full_name}")
 
             # Optional focused screenshot for this step
-            crop_name = ""
+            screenshot_list = [full_name]
             if step in focused_after_steps and (j + 1) < len(screenshots):
                 crop_name = f"step_{step:03d}_focus.png"
                 storage.save_screenshot(screenshots[j + 1], crop_name)
                 print(f"  Saved: {crop_name}")
+                # Bundle cropped image with its parent as a list
+                screenshot_list.append(crop_name)
                 j += 2
             else:
                 j += 1
 
-            # Add to manifest with a pair [full, focused or empty]
+            # Add to manifest with bundled list [full, focused] when crop exists, [full] otherwise
             action = final_state['action_history'][step] if step < len(final_state['action_history']) else None
             storage.append_state({
                 'step': step,
-                'screenshot': [full_name, crop_name],
+                'screenshot': screenshot_list,
                 'url': final_state['current_url'] if step == (final_state['step_count'] - 1) else None,
                 'action': action,
             })
