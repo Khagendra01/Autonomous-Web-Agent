@@ -8,6 +8,6 @@ Short answer: LLMs can reason about patterns, but they can’t reliably change t
 What I did now:
 Added a generic action the LLM can call: type=focus_contenteditable with optional selector. It focuses the nearest visible contenteditable (no Notion-specific logic).
 Kept observe exposing activeElement details so the LLM can detect traps and then call focus_contenteditable.
-How this avoids “hardcoding”:
+
 No app names, no specific attributes required in prompts.
 LLM decides when to call focus_contenteditable; the driver just executes a generic operation.
