@@ -1,0 +1,1 @@
+python -m src.drivers.grpc_playwright_server

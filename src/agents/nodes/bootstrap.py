@@ -3,7 +3,7 @@ import json
 import requests
 
 from ..state import AgentState
-from .common import client, DRIVER_URL
+from .common import client, driver_client
 
 
 def bootstrap_node(state: AgentState) -> Dict[str, Any]:
@@ -55,15 +55,11 @@ Return ONLY a JSON object with:
     if not base_url:
         raise RuntimeError("Failed to infer base URL from instruction. Please specify a URL.")
 
-    # Initialize driver at inferred base URL
+    # Initialize driver at inferred base URL (gRPC)
     try:
-        resp = requests.post(f"{DRIVER_URL}/init", json={
-            'app': app_name or 'WebApp',
-            'url': base_url,
-        }, timeout=30)
-        rj = resp.json()
-        if not rj.get('ok'):
-            raise RuntimeError(rj.get('error') or 'Driver init failed')
+        r = driver_client.init(app_name or 'WebApp', base_url)
+        if not r.ok:
+            raise RuntimeError(r.error or 'Driver init failed')
         print(f"  ✓ Driver initialized at {base_url}")
     except Exception as e:
         print(f"  ❌ Driver init error: {e}")

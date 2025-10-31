@@ -2,20 +2,17 @@ from typing import Any, Dict
 import requests
 
 from ..state import AgentState
-from .common import DRIVER_URL
+from .common import driver_client
 
 
 def observe_node(state: AgentState) -> Dict[str, Any]:
     """Observe the current page state via the driver."""
     print(f"\n[OBSERVE] Step {state['step_count']}")
     
-    # Get current page state
-    resp = requests.post(f"{DRIVER_URL}/observe")
-    data = resp.json()
-    
+    # Get current page state (gRPC)
+    observe = driver_client.observe()
     # Capture screenshot
-    screenshot_resp = requests.get(f"{DRIVER_URL}/screenshot")
-    screenshot_bytes = screenshot_resp.content
+    screenshot_bytes = driver_client.screenshot()
     
     # Cap interactables to avoid excessive token usage downstream
     all_interactables = data.get('interactables') or []
@@ -23,21 +20,21 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
 
     # Update state
     updates = {
-        'current_url': data['url'],
-        'dom_snapshot': data['a11y'],
+        'current_url': observe.url,
+        'dom_snapshot': None,  # a11y tree not included in gRPC response for now
         'interactable_elements': capped_interactables,
-        'errors': data.get('errors') or [],
+        'errors': list(observe.errors),
         'screenshot_bytes': screenshot_bytes,
         'screenshots': state['screenshots'] + [screenshot_bytes],
     }
     
-    print(f"  URL: {data['url']}")
+    print(f"  URL: {observe.url}")
     if len(all_interactables) > 200:
         print(f"  Found {len(all_interactables)} interactable elements (capped to 200)")
     else:
         print(f"  Found {len(all_interactables)} interactable elements")
-    if data.get('errors'):
-        print(f"  ⚠️  Errors detected: {data['errors']}")
+    if observe.errors:
+        print(f"  ⚠️  Errors detected: {list(observe.errors)}")
     
     return updates
 

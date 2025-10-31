@@ -5,6 +5,7 @@ import requests
 from pathlib import Path
 from urllib.parse import urlparse
 from .workflow import create_agent_workflow
+from ..drivers.grpc_client import DriverClient
 from .state import AgentState
 from .utils.storage import RunStorage
 from dotenv import load_dotenv
@@ -22,23 +23,18 @@ def initialize_driver(app_name: str, start_url: str):
     }
     
     try:
-        resp = requests.post("http://127.0.0.1:3999/init", json=payload, timeout=30)
-        result = resp.json()
-        
-        if not result.get('ok'):
-            raise RuntimeError(f"Driver initialization failed: {result.get('error')}")
-        
+        client = DriverClient()
+        resp = client.init(app_name, start_url)
+        if not resp.ok:
+            raise RuntimeError(f"Driver initialization failed: {resp.error}")
         print(f"✓ Driver initialized successfully")
         print(f"✓ Navigated to: {start_url}")
         return True
-        
-    except requests.exceptions.ConnectionError:
-        print("\n❌ Cannot connect to driver!")
-        print("Please start the driver first:")
-        print("  python -m src.drivers.playwright_driver")
-        return False
     except Exception as e:
-        print(f"\n❌ Driver initialization error: {e}")
+        print("\n❌ Cannot connect to driver!")
+        print("Please start the gRPC driver server first:")
+        print("  python -m src.drivers.grpc_playwright_server")
+        print(f"Details: {e}")
         return False
 
 

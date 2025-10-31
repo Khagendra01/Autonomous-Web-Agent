@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 import requests
 
 from ..state import AgentState, ScoredAction
-from .common import DRIVER_URL
+from .common import driver_client
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
@@ -28,19 +28,14 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     # Capture a focused screenshot around the target (with padding) before executing
     try:
         if action.selector and action.action_type in ('click', 'type'):
-            crop_resp = requests.post(f"{DRIVER_URL}/screenshot_region", json={
-                'selector': action.selector,
-                'margin': 24,
-            }, timeout=10)
-            if crop_resp.status_code == 200 and crop_resp.content:
-                # Append focused image to screenshots list
-                focused_bytes = crop_resp.content
+            try:
+                focused_bytes = driver_client.screenshot_region(action.selector, margin=24)
                 screenshots = state.get('screenshots') or []
                 screenshots = screenshots + [focused_bytes]
                 # Track that this focused screenshot corresponds to the current step index
                 focused_after_steps = set(state.get('focused_after_steps') or [])
                 focused_after_steps.add(state.get('step_count', 0))
-            else:
+            except Exception:
                 screenshots = state.get('screenshots') or []
                 focused_after_steps = set(state.get('focused_after_steps') or [])
         else:
@@ -52,13 +47,16 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     
     # Execute via driver
     try:
-        resp = requests.post(f"{DRIVER_URL}/act", json=payload, timeout=60)
-        result = resp.json()
+        result = driver_client.act(
+            type=payload['type'],
+            selector=payload.get('selector'),
+            text=payload.get('text')
+        )
         
-        if not result.get('ok'):
-            print(f"  ❌ Action failed: {result.get('error')}")
+        if not result.ok:
+            print(f"  ❌ Action failed: {result.error}")
             return {
-                'error': result.get('error'),
+                'error': result.error,
                 'stuck_count': state['stuck_count'] + 1
             }
         
@@ -68,24 +66,18 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         if action.action_type == 'type' and action.text:
             try:
                 # Assert the typed text is present in page text
-                verify = requests.post(f"{DRIVER_URL}/act", json={
-                    'type': 'assert',
-                    'kind': 'text_present',
-                    'text': str(action.text),
-                }, timeout=6)
-                ok = verify.ok and (verify.json().get('ok') is True)
+                verify = driver_client.act(type='assert', kind='text_present', text=str(action.text))
+                ok = bool(verify.ok)
                 if not ok:
                     # If focus likely still on title and we intended body, send Enter handoff then retype once
                     try:
-                        requests.post(f"{DRIVER_URL}/act", json={ 'type': 'press', 'keys': 'Enter' }, timeout=4)
+                        driver_client.act(type='press', keys='Enter')
                     except Exception:
                         pass
                     try:
-                        requests.post(f"{DRIVER_URL}/act", json=payload, timeout=10)
+                        driver_client.act(type=payload['type'], selector=payload.get('selector'), text=payload.get('text'))
                         # One last check
-                        requests.post(f"{DRIVER_URL}/act", json={
-                            'type': 'assert', 'kind': 'text_present', 'text': str(action.text)
-                        }, timeout=5)
+                        driver_client.act(type='assert', kind='text_present', text=str(action.text))
                     except Exception:
                         pass
             except Exception:
