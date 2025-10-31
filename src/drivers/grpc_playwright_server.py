@@ -74,7 +74,16 @@ def to_interactables(a11y: dict) -> list[dict]:
                         return
                 except Exception:
                     pass
-            out.append({'role': role, 'label': name, 'selector': f"role={role}[name=\"{name}\"]"})
+            # Normalize keyboard-hint suffixes for menu entries (e.g., "G then S")
+            label_out = name
+            if role in ("menuitem", "option"):
+                try:
+                    label_out = re.sub(r'(?i)\\b([A-Z])\\s*then\\s*([A-Z])\\b', '', label_out).strip()
+                    label_out = re.sub(r'(?i)\\b[A-Z]then[A-Z]\\b', '', label_out).strip()
+                    label_out = re.sub(r'\\s{2,}', ' ', label_out).strip()
+                except Exception:
+                    pass
+            out.append({'role': role, 'label': label_out, 'selector': f"role={role}[name=\"{label_out}\"]"})
         for c in node.get('children', []) or []:
             walk(c)
 
@@ -181,11 +190,20 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             name = it.get('name') or ''
             if not role or not name:
                 continue
-            key = (role, name)
+            # Normalize keyboard-hint suffixes for menu/option names
+            label_out = name
+            if role in ("menuitem", "option"):
+                try:
+                    label_out = re.sub(r'(?i)\\b([A-Z])\\s*then\\s*([A-Z])\\b', '', label_out).strip()
+                    label_out = re.sub(r'(?i)\\b[A-Z]then[A-Z]\\b', '', label_out).strip()
+                    label_out = re.sub(r'\\s{2,}', ' ', label_out).strip()
+                except Exception:
+                    pass
+            key = (role, label_out)
             if key in seen:
                 continue
             seen.add(key)
-            interactables.append({'role': role, 'label': name, 'selector': f'role={role}[name="{name}"]'})
+            interactables.append({'role': role, 'label': label_out, 'selector': f'role={role}[name="{label_out}"]'})
 
         # errors
         error_messages = _page.evaluate(
@@ -237,7 +255,43 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             return driver_pb2.ScreenshotResponse(error='selector is required')
         try:
             loc = _page.locator(selector).first
-            loc.wait_for(state='visible', timeout=5000)
+            # Relaxed handling for ARIA option/menuitem with keyboard-hint names
+            if isinstance(selector, str) and (selector.startswith('role=option[name="') or selector.startswith('role=menuitem[name="')):
+                m = re.match(r'^role=(option|menuitem)\[name="(.+?)"\]$', selector)
+                desired_label = m.group(2) if m else ''
+                try:
+                    desired_label = re.sub(r'(?i)\b([A-Z])\s*then\s*([A-Z])\b', '', desired_label).strip()
+                    desired_label = re.sub(r'(?i)\b[A-Z]then[A-Z]\b', '', desired_label).strip()
+                    desired_label = re.sub(r'\s{2,}', ' ', desired_label).strip()
+                except Exception:
+                    pass
+                candidates = [
+                    _page.get_by_role('option', name=desired_label).first,
+                    _page.get_by_role('menuitem', name=desired_label).first,
+                    _page.locator('[role="option"]', has_text=desired_label).first,
+                    _page.locator('[role="menuitem"]', has_text=desired_label).first,
+                ]
+                try:
+                    regex = re.compile(re.escape(desired_label), re.IGNORECASE)
+                    candidates.extend([
+                        _page.locator('[role="option"]').filter(has_text=regex).first,
+                        _page.locator('[role="menuitem"]').filter(has_text=regex).first,
+                    ])
+                except Exception:
+                    pass
+                for c in candidates:
+                    try:
+                        if c and c.count() > 0:
+                            c.wait_for(state='visible', timeout=1000)
+                            loc = c
+                            break
+                    except Exception:
+                        continue
+            # Best-effort wait
+            try:
+                loc.wait_for(state='visible', timeout=3000)
+            except Exception:
+                pass
             try:
                 loc.scroll_into_view_if_needed(timeout=1000)
             except Exception:
@@ -284,6 +338,69 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 last_err = None
                 for sel in iter_selectors():
                     try:
+                        # Robust handling for ARIA option/menuitem selectors (menus, listboxes)
+                        if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="')):
+                            m = re.match(r'^role=(option|menuitem)\[name="(.+?)"\]$', sel)
+                            desired_label = m.group(2) if m else ''
+                            try:
+                                desired_label = re.sub(r'(?i)\b([A-Z])\s*then\s*([A-Z])\b', '', desired_label).strip()
+                                desired_label = re.sub(r'(?i)\b[A-Z]then[A-Z]\b', '', desired_label).strip()
+                                desired_label = re.sub(r'\s{2,}', ' ', desired_label).strip()
+                            except Exception:
+                                pass
+                            # Ensure a container is open if needed
+                            try:
+                                container = ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first
+                                if container.count() == 0 or not container.is_visible():
+                                    try:
+                                        combo = ctx.locator('[role="combobox"]').filter(has=ctx.locator('[aria-expanded="false"]')).first
+                                        if combo and (combo.count() > 0):
+                                            combo.click(timeout=800)
+                                    except Exception:
+                                        pass
+                                    try:
+                                        (ctx.page.keyboard if hasattr(ctx, 'page') else ctx.keyboard).press('Alt+ArrowDown')
+                                    except Exception:
+                                        pass
+                                    (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                                ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first.wait_for(state='visible', timeout=8000)
+                            except Exception:
+                                pass
+
+                            candidates = [
+                                ctx.get_by_role('option', name=desired_label).first,
+                                ctx.get_by_role('menuitem', name=desired_label).first,
+                                ctx.locator('[role="option"]', has_text=desired_label).first,
+                                ctx.locator('[role="menuitem"]', has_text=desired_label).first,
+                            ]
+                            try:
+                                regex = re.compile(re.escape(desired_label), re.IGNORECASE)
+                                candidates.extend([
+                                    ctx.locator('[role="option"]').filter(has_text=regex).first,
+                                    ctx.locator('[role="menuitem"]').filter(has_text=regex).first,
+                                ])
+                            except Exception:
+                                pass
+                            clicked = False
+                            for cand in candidates:
+                                try:
+                                    if cand and cand.count() > 0:
+                                        try:
+                                            cand.scroll_into_view_if_needed(timeout=1000)
+                                        except Exception:
+                                            pass
+                                        cand.wait_for(state='visible', timeout=8000)
+                                        cand.click(timeout=5000)
+                                        (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                                        clicked = True
+                                        break
+                                except Exception:
+                                    continue
+                            if clicked:
+                                return driver_pb2.ActResponse(ok=True)
+                            # Fall through to default path if not clicked
+
+                        # Default path
                         ctx.locator(sel).first.wait_for(state='visible', timeout=10000)
                         try:
                             ctx.locator(sel).first.scroll_into_view_if_needed(timeout=1000)

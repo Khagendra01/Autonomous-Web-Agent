@@ -19,7 +19,6 @@ dependencies = [
   "networkx>=3.3",
   "matplotlib>=3.9.2",
   "playwright>=1.48.0",
-  "flask>=3.0.3",
   "python-dotenv>=1.0.0",
   "grpcio>=1.65.5",
   "grpcio-tools>=1.65.5"
