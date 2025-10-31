@@ -1,5 +1,4 @@
 from typing import Any, Dict
-import requests
 
 from ..state import AgentState
 from .common import driver_client
@@ -15,7 +14,14 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     screenshot_bytes = driver_client.screenshot()
     
     # Cap interactables to avoid excessive token usage downstream
-    all_interactables = data.get('interactables') or []
+    all_interactables = [
+        {
+            'role': inter.role,
+            'label': inter.label,
+            'selector': inter.selector,
+        }
+        for inter in observe.interactables
+    ]
     capped_interactables = all_interactables[:200]
 
     # Update state
