@@ -5,7 +5,6 @@ from .nodes import (
     bootstrap_node,
     observe_node,
     score_actions_node,
-    decide_action_node,
     execute_action_node,
     check_goal_node,
     should_continue,
@@ -22,7 +21,6 @@ def create_agent_workflow():
     workflow.add_node("bootstrap", bootstrap_node)
     workflow.add_node("observe", observe_node)
     workflow.add_node("score_actions", score_actions_node)
-    workflow.add_node("decide_action", decide_action_node)
     workflow.add_node("execute_action", execute_action_node)
     workflow.add_node("check_goal", check_goal_node)
     
@@ -35,9 +33,8 @@ def create_agent_workflow():
     # observe -> score_actions
     workflow.add_edge("observe", "score_actions")
     
-    # score_actions -> decide_action -> execute_action
-    workflow.add_edge("score_actions", "decide_action")
-    workflow.add_edge("decide_action", "execute_action")
+    # score_actions -> execute_action (decision logic moved to scoring node)
+    workflow.add_edge("score_actions", "execute_action")
     
     # execute_action -> check_goal
     workflow.add_edge("execute_action", "check_goal")

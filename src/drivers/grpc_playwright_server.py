@@ -226,6 +226,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 }
                 """
             )
+        
         except Exception:
             extra_items = []
         seen = {(item['role'], item['label']) for item in interactables}
@@ -402,7 +403,7 @@ If no element matches well, return -1.
 Respond with ONLY a number (the idx or -1)."""
                 
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-5-mini",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 

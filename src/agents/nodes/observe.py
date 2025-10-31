@@ -29,7 +29,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         }
         for inter in observe.interactables
     ]
-    capped_interactables = all_interactables[:200]
+    capped_interactables = all_interactables
 
     # Update state
     updates = {
