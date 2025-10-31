@@ -5,9 +5,21 @@ Very short read me written by hand
 ##Design Choices
 GRPC server for microservices call inbetween the server program
 Langgraph for controlled flow of the instruction
-Gpt-4o for model because this is enough and still faster than 5, while inferencing.
+
+
+
 
 for account with login credential we will save the login by running script/record_cookies to the chrome-user profile, and that will be set along with the request
 
 ## Start the Playwright Driver server
 python -m src.drivers.grpc_playwright_server
+
+
+BenchMark across the model:
+choosen GPT model because I had free credits from OPENAI CODEX HACKATHON
+GPT-5 -> take way too long just process IO, maybe of compute time of large parameter or its instances still not deployed as much as 4o
+GPT-5-mini -> does the task well however still slower
+GPT-4o-> is medium level does but sometime hallucinate or lack intelligience of gpt-5
+Gpt-4o-mini-> bro looks like a boy in the war who mistake all the time
+
+Preferences -> Gpt4o/ 5-mini

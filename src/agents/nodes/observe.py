@@ -19,6 +19,13 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
             'role': inter.role,
             'label': inter.label,
             'selector': inter.selector,
+            'disabled': inter.disabled,
+            'tag': inter.tag,
+            'classes': list(inter.classes),
+            'id': inter.id,
+            'href': inter.href,
+            'type': inter.type,
+            'placeholder': inter.placeholder,
         }
         for inter in observe.interactables
     ]

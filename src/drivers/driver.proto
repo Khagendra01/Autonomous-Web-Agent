@@ -8,13 +8,25 @@ service Driver {
   rpc Screenshot(ScreenshotRequest) returns (ScreenshotResponse);
   rpc ScreenshotRegion(ScreenshotRegionRequest) returns (ScreenshotResponse);
   rpc Act(ActRequest) returns (ActResponse);
+  rpc SmartLocate(SmartLocateRequest) returns (SmartLocateResponse);
 }
 
 message InitRequest { string app = 1; string url = 2; string cookies_path = 3; }
 message InitResponse { bool ok = 1; string error = 2; string start_url = 3; }
 
 message ObserveRequest {}
-message Interactable { string role = 1; string label = 2; string selector = 3; }
+message Interactable { 
+  string role = 1; 
+  string label = 2; 
+  string selector = 3; 
+  bool disabled = 4;
+  string tag = 5;
+  repeated string classes = 6;
+  string id = 7;
+  string href = 8;
+  string type = 9;
+  string placeholder = 10;
+}
 message FrameInfo { int32 index = 1; string name = 2; string url = 3; }
 message Focused { string role = 1; string name = 2; string tag = 3; string editable = 4; string text = 5; }
 message ObserveResponse {
@@ -45,5 +57,17 @@ message ActRequest {
   string substring = 13;
 }
 message ActResponse { bool ok = 1; string error = 2; }
+
+message SmartLocateRequest {
+  string description = 1;  // Natural language description of what to find
+  string failed_selector = 2;  // The selector that failed (optional)
+  bool use_llm = 3;  // Whether to use LLM for intelligent matching
+}
+message SmartLocateResponse {
+  bool ok = 1;
+  string error = 2;
+  string selector = 3;  // The working selector found
+  string strategy = 4;  // Which strategy worked (for debugging)
+}
 
 

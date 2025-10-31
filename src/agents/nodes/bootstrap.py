@@ -26,12 +26,11 @@ Return ONLY a JSON object with:
 }}"""
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model="gpt-5-mini",
         messages=[
             {"role": "system", "content": "Infer target app and base URL for web automation. Return only valid JSON."},
             {"role": "user", "content": prompt},
-        ],
-        temperature=0.2,
+        ]
     )
 
     content = response.choices[0].message.content.strip()

@@ -1,163 +1,121 @@
-from typing import Any, Dict
+from typing import Any, Dict, Optional, List
 import json
+import re
 
 from ..state import AgentState
 from .common import client
 
 
+def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
+    if "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 2:
+            candidate = parts[1]
+            if candidate.lstrip().startswith("json"):
+                candidate = candidate.lstrip()[4:]
+            text = candidate.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    try:
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            return json.loads(match.group(0))
+    except Exception:
+        return None
+    return None
+
+
 def check_goal_node(state: AgentState) -> Dict[str, Any]:
-    """Use LLM to check if we've reached the goal - PURE LLM EVALUATION, NO HEURISTICS."""
-    print(f"\n[CHECK GOAL] LLM evaluating goal completion...")
-    print(f"  Goal: {state['goal']}")
-    print(f"  Steps taken: {state['step_count']}")
-    
-    # Build detailed context for LLM
-    recent_actions = state['action_history'][-10:]  # Show more history for better evaluation
-    
-    # Include full action details with text content
-    action_details = []
+    """Evaluate whether the goal is complete using LLM with robust, app-agnostic criteria."""
+    print(f"\n[CHECK GOAL] Evaluating goal completion")
+    print(f"  Goal: {state.get('goal', '')}")
+    print(f"  Steps taken: {state.get('step_count', 0)}")
+
+    model_name = state.get('llm_model') or "gpt-5-mini"
+    recent_actions = (state.get('action_history') or [])[-10:]
+
+    # Normalize action details for evaluation
+    action_details: List[Dict[str, Any]] = []
     for a in recent_actions:
-        detail = {
-            'type': a['type'],
+        action_details.append({
+            'type': a.get('type', ''),
             'label': a.get('label', ''),
-            'text': a.get('text', ''),  # Include typed text for verification
-            'score': a.get('score', 0),  # Include the confidence score
-            'reasoning': a.get('reasoning', '')  # Include why this action was chosen
-        }
-        action_details.append(detail)
-    
-    # Highlight the most recent action for emphasis
+            'text': a.get('text', ''),
+            'score': a.get('score', 0),
+            'reasoning': a.get('reasoning', ''),
+        })
+
     last_action = action_details[-1] if action_details else None
-    last_action_summary = "None yet"
     if last_action:
         text_part = f" with text '{last_action['text']}'" if last_action.get('text') else ""
-        last_action_summary = f"{last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})"
-        print(f"  Last action completed: {last_action_summary}")
-    
-    prompt = f"""Evaluate whether the goal has been achieved based on the complete action history and current state.
+        print(f"  Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
 
-**IMPORTANT**: Give STRONG PRIORITY to determining the task is COMPLETE when the action sequence shows all required steps were executed successfully. Be optimistic about completion - if the actions align with the goal and there are no errors, the task is likely done.
+    prompt = f"""Assess whether the user's goal has been completed based on the action history and current state.
 
-**Goal (normalized)**: {state['goal']}
-**Full instruction (verbatim)**: {state.get('instruction', '')}
-**Current URL**: {state['current_url']}
-**Steps Taken**: {state['step_count']}
-**App**: {state.get('app_name', 'Unknown')}
-**Errors**: {json.dumps(state.get('errors', []))}
+Context:
+- Goal: {state.get('goal', '')}
+- Instruction: {state.get('instruction', '')}
+- Current URL: {state.get('current_url', '')}
+- Steps Taken: {state.get('step_count', 0)}
+- Errors: {json.dumps(state.get('errors', []))}
 
-**LAST ACTION JUST COMPLETED** (most recent):
+Most recent action:
 {json.dumps(last_action, indent=2) if last_action else "None"}
 
-**Complete Action History** (chronological order):
+Complete Action History (chronological):
 {json.dumps(action_details, indent=2)}
 
-**Currently Available UI Elements** (for detecting pending submit/confirm steps):
+Currently Available UI Elements (if any):
 {json.dumps(state.get('interactable_elements', []), indent=2)}
 
-EVALUATION STRATEGY:
-Analyze the action sequence to determine if the goal is COMPLETE. Default to completion only when the action patterns match standard workflows and there are no obvious pending submission steps.
+Evaluation principles (generic, app-agnostic):
+1) Favor completion when a coherent workflow of actions aligns with the goal and no errors are present.
+2) If a visible submission/confirmation control remains (e.g., a generic submit/confirm control), prefer marking as incomplete.
+3) Consider typed values matching goal parameters as strong evidence of progress/completion.
+4) Avoid over-caution: many modern apps auto-save; absence of explicit submit does not always imply incompletion.
+5) Provide a concise, evidence-based rationale referencing specific actions.
 
-Be pragmatic but careful: If a clear submission/confirmation button (e.g., "Send", "Invite", "Submit", "Save", "Create", "Confirm") is visible in the Currently Available UI Elements, the workflow is NOT complete until that button is clicked.
-
-1. **COMMENTING GOALS** (e.g., "post a comment", "comment hi on video"):
-   - Look for: type action into comment box + click "Comment"/"Post" button
-   - Success pattern: typed text → clicked submit WITHOUT errors
-   - ✓ If you see this sequence completed → **GOAL IS REACHED**
-   - Example: typed "hi" into comment textbox, clicked "Comment" → **SUCCESS** (confidence: 0.95)
-
-2. **PAGE/NOTE CREATION GOALS** (e.g., "create page titled X with content Y"):
-   - Look for: type action for TITLE + type action for BODY/CONTENT
-   - In Notion/docs apps, there are usually TWO separate type actions:
-     * First type: page title (e.g., "Daily Note")
-     * Second type: page body content (e.g., "This is great")
-   - ✓ Success pattern: both title AND body typed WITHOUT errors → **GOAL IS REACHED**
-   - If goal specifies both title and content, BOTH must be present in action history
-   - Example: typed "Daily Note" (title), typed "Softlight Engineering..." (content) → **SUCCESS** (confidence: 0.95)
-
-3. **TASK/PROJECT/ITEM CREATION** (e.g., "create task called X", "create project Y"):
-   - Look for: clicked "Create"/"New"/"Add" → typed name → (optional: clicked "Save"/"Create")
-   - ✓ Success pattern: opened creation flow + filled required fields → **LIKELY COMPLETE**
-   - **IMPORTANT**: Many apps auto-save, so submission button click is NOT always required
-   - If you see: opened dialog + typed name with HIGH score (8+) + no errors → **GOAL IS REACHED** (confidence: 0.9)
-   - Example: clicked "New task", typed "Web Agent" → **SUCCESS** (auto-save assumed)
-
-4. **FILTER/NAVIGATION GOALS** (e.g., "filter by in-progress", "go to section"):
-   - Look for: clicked menu/filter/navigation element
-   - ✓ Success pattern: clicked target filter/section WITHOUT errors → **GOAL IS REACHED**
-   - Example: clicked "In Progress" filter → **SUCCESS** (confidence: 0.9)
-
-5. **STATUS CHANGE GOALS** (e.g., "change status to done", "mark as complete"):
-   - Look for: opened status menu + clicked desired status option
-   - ✓ Success pattern: clicked item → clicked status dropdown → selected target status → **GOAL IS REACHED**
-   - Example: clicked task, clicked status, clicked "Complete" → **SUCCESS** (confidence: 0.95)
-
-6. **DELETION GOALS** (e.g., "delete page X", "remove item Y"):
-   - Look for: navigated to item + clicked delete/remove button + (optional: confirmed)
-   - ✓ Success pattern: found item + clicked delete WITHOUT errors → **GOAL IS REACHED**
-   - Example: clicked "Daily Journal", clicked "Delete", clicked "Confirm" → **SUCCESS**
-
-7. **ASSIGNMENT/INVITE GOALS** (e.g., "assign to X", "invite user Y"):
-   - Look for: clicked assignee/invite field + typed/selected user/email + clicked submission if present
-   - ✓ Success pattern: selection made AND if a submission control like "Send", "Invite", "Add", or "Confirm" is visible, it must be clicked
-   - If a small suggestion popup was clicked (e.g., "Invite: <email>") but a "Send" or equivalent button is still available, the task is NOT yet complete
-   - Example: clicked "Invite teammates", typed email, selected suggestion, clicked "Send" → **SUCCESS**
-
-8. **GENERAL COMPLETION RULES** (MOST IMPORTANT):
-   - ✓ If the LAST ACTION has a HIGH SCORE (≥8.0) and represents a completion step (Submit, Save, Create, Delete, Confirm, Send/Invite), and there are NO errors → **GOAL IS REACHED** (confidence: 0.95)
-   - ✓ If all required data from the goal appears in type actions, and there are NO errors, and there is NO visible submission/confirmation control remaining → **GOAL IS REACHED** (confidence: 0.9)
-   - ✓ If the action sequence follows a standard workflow for the goal type, and there are NO errors, and there is NO visible submission/confirmation control remaining → **GOAL IS REACHED** (confidence: 0.85)
-   - ✗ Mark incomplete when: a likely submission/confirmation control is visible (e.g., "Send", "Invite", "Submit", "Save", "Create", "Confirm") OR critical steps are missing OR there are validation errors
-
-9. **CONFIDENCE LEVELS** (be optimistic):
-   - 0.9-1.0: Standard workflow completed without errors (USE THIS MOST OF THE TIME)
-   - 0.7-0.8: Most steps done but minor uncertainty (be generous here)
-   - 0.5-0.6: Some progress but key steps missing
-   - 0.0-0.4: Very early in the process or wrong direction
-
-**CRITICAL INSTRUCTION**: READ THE ACTION LOG CAREFULLY. If you see a complete workflow executed (e.g., opened form → filled fields → clicked submit) with NO errors, the task is DONE. Don't overthink it - trust the action sequence.
-
-Respond with ONLY a JSON object:
+Return ONLY valid JSON:
 {{
   "goal_reached": true/false,
-  "reasoning": "Detailed explanation citing specific actions from history",
+  "reasoning": "short evidence-based explanation",
   "confidence": 0.0-1.0,
-  "missing_steps": ["list any steps that still need to be done, or empty array if complete"]
+  "missing_steps": ["optional list of next steps if not complete"]
 }}"""
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": "You are an expert at evaluating web automation task completion. Analyze action sequences carefully. Return only valid JSON."},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.2,
-    )
-    
-    content = response.choices[0].message.content.strip()
-    if content.startswith("```"):
-        content = content.split("```")[1]
-        if content.startswith("json"):
-            content = content[4:]
-        content = content.strip()
-    
     try:
-        result = json.loads(content)
-        goal_reached = result.get('goal_reached', False)
-        reasoning = result.get('reasoning', 'Unknown')
-        confidence = result.get('confidence', 0.5)
-        missing_steps = result.get('missing_steps', [])
-        
-        print(f"  ✓ Goal reached: {goal_reached} (confidence: {confidence:.1%})")
-        print(f"  Reasoning: {reasoning}")
-        if missing_steps:
-            print(f"  Missing steps: {', '.join(missing_steps)}")
-        
-        return {
-            'goal_reached': goal_reached
-        }
-        
-    except json.JSONDecodeError as e:
-        print(f"  ⚠️  Failed to parse goal check response: {e}")
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "You evaluate whether a web task is complete. Return only valid JSON."},
+                {"role": "user", "content": prompt}
+            ]
+        )
+        content = (response.choices[0].message.content or "").strip()
+    except Exception as e:
+        print(f"  Evaluation LLM call failed: {e}")
         return {'goal_reached': False}
+
+    result = _extract_json_payload(content) or {}
+    goal_reached = bool(result.get('goal_reached', False))
+    reasoning = (result.get('reasoning') or 'Unknown').strip()
+    try:
+        confidence = float(result.get('confidence', 0.5))
+    except Exception:
+        confidence = 0.5
+    missing_steps = result.get('missing_steps', []) or []
+
+    print(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
+    if reasoning:
+        print(f"  Reasoning: {reasoning}")
+    if missing_steps:
+        try:
+            print(f"  Missing steps: {', '.join(map(str, missing_steps))}")
+        except Exception:
+            print("  Missing steps: (unprintable)")
+
+    return { 'goal_reached': goal_reached }
 
 

@@ -66,5 +66,19 @@ class DriverClient:
             substring=(substring or ""),
         )
         return self.stub.Act(req)
+    
+    def smart_locate(
+        self,
+        description: str,
+        failed_selector: Optional[str] = None,
+        use_llm: bool = False
+    ) -> driver_pb2.SmartLocateResponse:
+        """Intelligently find an element using multiple strategies"""
+        req = driver_pb2.SmartLocateRequest(
+            description=description,
+            failed_selector=(failed_selector or ""),
+            use_llm=use_llm
+        )
+        return self.stub.SmartLocate(req)
 
 

@@ -59,6 +59,11 @@ class DriverStub(object):
                 request_serializer=driver__pb2.ActRequest.SerializeToString,
                 response_deserializer=driver__pb2.ActResponse.FromString,
                 _registered_method=True)
+        self.SmartLocate = channel.unary_unary(
+                '/driver.Driver/SmartLocate',
+                request_serializer=driver__pb2.SmartLocateRequest.SerializeToString,
+                response_deserializer=driver__pb2.SmartLocateResponse.FromString,
+                _registered_method=True)
 
 
 class DriverServicer(object):
@@ -94,6 +99,12 @@ class DriverServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def SmartLocate(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_DriverServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -121,6 +132,11 @@ def add_DriverServicer_to_server(servicer, server):
                     servicer.Act,
                     request_deserializer=driver__pb2.ActRequest.FromString,
                     response_serializer=driver__pb2.ActResponse.SerializeToString,
+            ),
+            'SmartLocate': grpc.unary_unary_rpc_method_handler(
+                    servicer.SmartLocate,
+                    request_deserializer=driver__pb2.SmartLocateRequest.FromString,
+                    response_serializer=driver__pb2.SmartLocateResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -258,6 +274,33 @@ class Driver(object):
             '/driver.Driver/Act',
             driver__pb2.ActRequest.SerializeToString,
             driver__pb2.ActResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def SmartLocate(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/driver.Driver/SmartLocate',
+            driver__pb2.SmartLocateRequest.SerializeToString,
+            driver__pb2.SmartLocateResponse.FromString,
             options,
             channel_credentials,
             insecure,

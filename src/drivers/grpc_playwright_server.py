@@ -48,6 +48,7 @@ def to_interactables(a11y: dict) -> list[dict]:
     def walk(node: dict):
         role = node.get('role')
         name = node.get('name') or ''
+        disabled = node.get('disabled', False)  # Check disabled state from a11y tree
         if role in ["button", "textbox", "combobox", "link", "menuitem", "checkbox", "radio"]:
             if role == "textbox" and page_ref:
                 try:
@@ -83,7 +84,20 @@ def to_interactables(a11y: dict) -> list[dict]:
                     label_out = re.sub(r'\\s{2,}', ' ', label_out).strip()
                 except Exception:
                     pass
-            out.append({'role': role, 'label': label_out, 'selector': f"role={role}[name=\"{label_out}\"]"})
+            
+            # Note: a11y tree doesn't have tag/class info, we'll get it from extra_items
+            out.append({
+                'role': role, 
+                'label': label_out, 
+                'selector': f"role={role}[name=\"{label_out}\"]", 
+                'disabled': disabled,
+                'tag': '',
+                'classes': [],
+                'id': '',
+                'href': '',
+                'type': '',
+                'placeholder': ''
+            })
         for c in node.get('children', []) or []:
             walk(c)
 
@@ -136,6 +150,19 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                     const rect = el.getBoundingClientRect();
                     return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0;
                   }
+                  function textOf(el) {
+                    const aria = el.getAttribute('aria-label') || '';
+                    const ph = el.getAttribute('placeholder') || '';
+                    const labelledBy = el.getAttribute('aria-labelledby');
+                    let labelled = '';
+                    if (labelledBy) {
+                      try {
+                        labelled = labelledBy.split(/\\s+/).map(id => (document.getElementById(id)?.innerText || document.getElementById(id)?.textContent || '')).join(' ').trim();
+                      } catch(e) {}
+                    }
+                    const inner = (el.innerText || el.textContent || '').trim();
+                    return (aria || labelled || ph || inner).trim();
+                  }
                   const results = [];
                   function collectAll(root) {
                     const arr = [root];
@@ -163,6 +190,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                     } catch (e) {}
                   }
                   const candidates = new Set();
+                  // 1) From open containers: menu/option/button/link
                   for (const root of containers) {
                     if (!visible(root)) continue;
                     const els = root.querySelectorAll('[role="menuitem"], [role="option"], button, a');
@@ -170,13 +198,56 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       if (!visible(el)) return;
                       const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
                       if (!role) return;
-                      const name = (el.getAttribute('aria-label') || el.textContent || '').trim();
+                      let name = el.getAttribute('aria-label') || el.innerText || el.textContent || '';
+                      name = name.trim().replace(/\\s+/g, ' ');
                       if (!name) return;
+                      const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+                      const tag = el.tagName.toLowerCase();
+                      const classes = Array.from(el.classList || []);
+                      const id = el.id || '';
+                      const href = el.getAttribute('href') || '';
+                      const type = el.getAttribute('type') || '';
+                      const placeholder = el.getAttribute('placeholder') || '';
                       const key = role + '|' + name;
                       if (candidates.has(key)) return;
                       candidates.add(key);
-                      results.push({ role, name });
+                      results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
                     });
+                  }
+                  // 2) Inputs/textareas/contenteditable/comboboxes across the page
+                  const inputSelectors = 'input, textarea, [role="textbox"], [contenteditable="true"], [role="combobox"]';
+                  for (const r of roots) {
+                    try {
+                      r.querySelectorAll(inputSelectors).forEach(el => {
+                        if (!visible(el)) return;
+                        let role = el.getAttribute('role') || '';
+                        const tag = el.tagName.toLowerCase();
+                        const type = (el.getAttribute('type') || '').toLowerCase();
+                        const classes = Array.from(el.classList || []);
+                        const id = el.id || '';
+                        const href = el.getAttribute('href') || '';
+                        const placeholder = el.getAttribute('placeholder') || '';
+                        const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+                        if (!role) {
+                          if (tag === 'textarea' || el.hasAttribute('contenteditable')) role = 'textbox';
+                          else if (tag === 'input') {
+                            if (['text','search','email','url','password'].includes(type) || !type) role = 'textbox';
+                          }
+                        }
+                        let name = textOf(el);
+                        if (!name) {
+                          if (role === 'combobox') name = 'Recipients';
+                          else if (type === 'email') name = 'To';
+                          else if (type === 'text' && /subject/i.test(id)) name = 'Subject';
+                        }
+                        if (!role || !name) return;
+                        name = name.replace(/\\s+/g, ' ').trim();
+                        const key = role + '|' + name;
+                        if (candidates.has(key)) return;
+                        candidates.add(key);
+                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
+                      });
+                    } catch(e) {}
                   }
                   return results;
                 }
@@ -188,6 +259,14 @@ class DriverService(driver_pb2_grpc.DriverServicer):
         for it in extra_items or []:
             role = it.get('role')
             name = it.get('name') or ''
+            disabled = it.get('disabled', False)
+            tag = it.get('tag', '')
+            classes = it.get('classes', [])
+            elem_id = it.get('id', '')
+            href = it.get('href', '')
+            elem_type = it.get('type', '')
+            placeholder = it.get('placeholder', '')
+            
             if not role or not name:
                 continue
             # Normalize keyboard-hint suffixes for menu/option names
@@ -203,7 +282,18 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             if key in seen:
                 continue
             seen.add(key)
-            interactables.append({'role': role, 'label': label_out, 'selector': f'role={role}[name="{label_out}"]'})
+            interactables.append({
+                'role': role, 
+                'label': label_out, 
+                'selector': f'role={role}[name="{label_out}"]', 
+                'disabled': disabled,
+                'tag': tag,
+                'classes': classes,
+                'id': elem_id,
+                'href': href,
+                'type': elem_type,
+                'placeholder': placeholder
+            })
 
         # errors
         error_messages = _page.evaluate(
@@ -237,10 +327,136 @@ class DriverService(driver_pb2_grpc.DriverServicer):
 
         return driver_pb2.ObserveResponse(
             url=url,
-            interactables=[driver_pb2.Interactable(role=i['role'], label=i['label'], selector=i['selector']) for i in interactables],
+            interactables=[driver_pb2.Interactable(
+                role=i['role'], 
+                label=i['label'], 
+                selector=i['selector'], 
+                disabled=i.get('disabled', False),
+                tag=i.get('tag', ''),
+                classes=i.get('classes', []),
+                id=i.get('id', ''),
+                href=i.get('href', ''),
+                type=i.get('type', ''),
+                placeholder=i.get('placeholder', '')
+            ) for i in interactables],
             errors=[str(e) for e in (error_messages or [])],
             frames=frames_info,
         )
+
+    def SmartLocate(self, request, context):
+        """Intelligently find an element using multiple strategies, optionally with LLM assistance"""
+        assert _page is not None
+        description = request.description
+        failed_selector = request.failed_selector
+        use_llm = request.use_llm
+        
+        if not description:
+            return driver_pb2.SmartLocateResponse(ok=False, error='Description is required')
+        
+        strategies_tried = []
+        
+        # Strategy 1: Try exact text match
+        try:
+            if _page.get_by_text(description, exact=True).count() == 1:
+                selector = f'text="{description}"'
+                return driver_pb2.SmartLocateResponse(ok=True, selector=selector, strategy='exact_text')
+        except Exception as e:
+            strategies_tried.append(f'exact_text: {e}')
+        
+        # Strategy 2: Try partial text match
+        try:
+            if _page.get_by_text(description).count() == 1:
+                selector = f'text={description}'
+                return driver_pb2.SmartLocateResponse(ok=True, selector=selector, strategy='partial_text')
+        except Exception as e:
+            strategies_tried.append(f'partial_text: {e}')
+        
+        # Strategy 3: Try role + name patterns
+        for role in ['button', 'link', 'option', 'menuitem', 'textbox']:
+            try:
+                if _page.get_by_role(role, name=description).count() == 1:
+                    selector = f'role={role}[name="{description}"]'
+                    return driver_pb2.SmartLocateResponse(ok=True, selector=selector, strategy=f'role_{role}')
+            except Exception:
+                pass
+        
+        # Strategy 4: Try finding by attributes (id, placeholder, aria-label)
+        for attr in ['id', 'placeholder', 'aria-label']:
+            try:
+                if _page.locator(f'[{attr}="{description}"]').count() == 1:
+                    selector = f'[{attr}="{description}"]'
+                    return driver_pb2.SmartLocateResponse(ok=True, selector=selector, strategy=f'attribute_{attr}')
+            except Exception:
+                pass
+        
+        # Strategy 5: Use LLM if enabled
+        if use_llm:
+            try:
+                from openai import OpenAI
+                client = OpenAI()
+                
+                # Get page structure
+                page_structure = _page.evaluate('''
+                    () => {
+                        const elements = [];
+                        document.querySelectorAll('button, a, input, [role="button"], [role="link"], [role="option"], [role="menuitem"]').forEach((el, idx) => {
+                            if (el.offsetParent !== null) {  // visible
+                                elements.push({
+                                    idx: idx,
+                                    tag: el.tagName.toLowerCase(),
+                                    text: (el.innerText || el.textContent || '').trim().substring(0, 100),
+                                    role: el.getAttribute('role'),
+                                    ariaLabel: el.getAttribute('aria-label'),
+                                    id: el.id,
+                                    classes: Array.from(el.classList).join(' '),
+                                    href: el.getAttribute('href')
+                                });
+                            }
+                        });
+                        return elements.slice(0, 50);  // Limit to top 50
+                    }
+                ''')
+                
+                prompt = f"""You are helping locate an element on a web page.
+                
+Description of what to find: {description}
+Failed selector (if any): {failed_selector}
+
+Available elements on page (showing visible ones):
+{json.dumps(page_structure, indent=2)}
+
+Return the INDEX (idx field) of the element that best matches the description.
+If multiple elements could match, choose the most likely one.
+If no element matches well, return -1.
+
+Respond with ONLY a number (the idx or -1)."""
+                
+                response = client.chat.completions.create(
+                    model="gpt-5-mini-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                
+                idx = int(response.choices[0].message.content.strip())
+                if idx >= 0 and idx < len(page_structure):
+                    elem = page_structure[idx]
+                    # Build a robust selector
+                    if elem.get('id'):
+                        selector = f'#{elem["id"]}'
+                    elif elem.get('role') and elem.get('ariaLabel'):
+                        selector = f'role={elem["role"]}[name="{elem["ariaLabel"]}"]'
+                    else:
+                        # Use nth-match of tag + text
+                        selector = f'{elem["tag"]}:has-text("{elem["text"][:30]}")'
+                    
+                    # Verify selector works
+                    if _page.locator(selector).count() > 0:
+                        return driver_pb2.SmartLocateResponse(ok=True, selector=selector, strategy='llm_analysis')
+            except Exception as e:
+                strategies_tried.append(f'llm: {e}')
+        
+        # All strategies failed
+        error_msg = f'Could not locate element. Tried: {"; ".join(strategies_tried)}'
+        return driver_pb2.SmartLocateResponse(ok=False, error=error_msg)
 
     def Screenshot(self, request, context):
         assert _page is not None
@@ -338,9 +554,9 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 last_err = None
                 for sel in iter_selectors():
                     try:
-                        # Robust handling for ARIA option/menuitem selectors (menus, listboxes)
-                        if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="')):
-                            m = re.match(r'^role=(option|menuitem)\[name="(.+?)"\]$', sel)
+                        # Robust handling for ARIA option/menuitem/link selectors (menus, listboxes, dropdowns)
+                        if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="') or sel.startswith('role=link[name="')):
+                            m = re.match(r'^role=(option|menuitem|link)\[name="(.+?)"\]$', sel)
                             desired_label = m.group(2) if m else ''
                             try:
                                 desired_label = re.sub(r'(?i)\b([A-Z])\s*then\s*([A-Z])\b', '', desired_label).strip()
@@ -370,17 +586,53 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                             candidates = [
                                 ctx.get_by_role('option', name=desired_label).first,
                                 ctx.get_by_role('menuitem', name=desired_label).first,
+                                ctx.get_by_role('link', name=desired_label).first,
                                 ctx.locator('[role="option"]', has_text=desired_label).first,
                                 ctx.locator('[role="menuitem"]', has_text=desired_label).first,
+                                ctx.locator('[role="link"]', has_text=desired_label).first,
+                                ctx.locator('a', has_text=desired_label).first,
                             ]
                             try:
                                 regex = re.compile(re.escape(desired_label), re.IGNORECASE)
                                 candidates.extend([
                                     ctx.locator('[role="option"]').filter(has_text=regex).first,
                                     ctx.locator('[role="menuitem"]').filter(has_text=regex).first,
+                                    ctx.locator('[role="link"]').filter(has_text=regex).first,
+                                    ctx.locator('a').filter(has_text=regex).first,
                                 ])
                             except Exception:
                                 pass
+                            
+                            # Add more flexible matching for email-like labels
+                            # Extract email part if present (e.g., "Name <email@domain.com>" or just "email@domain.com")
+                            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', desired_label)
+                            if email_match:
+                                email_only = email_match.group(0)
+                                try:
+                                    candidates.extend([
+                                        ctx.locator('[role="option"]').filter(has_text=email_only).first,
+                                        ctx.locator('[role="menuitem"]').filter(has_text=email_only).first,
+                                        ctx.locator('[role="link"]').filter(has_text=email_only).first,
+                                        ctx.locator('a').filter(has_text=email_only).first,
+                                    ])
+                                except Exception:
+                                    pass
+                            
+                            # Try partial matching - find options containing key parts of the label
+                            label_parts = desired_label.split()
+                            if len(label_parts) > 1:
+                                for part in label_parts:
+                                    if len(part) > 3:  # Only use meaningful parts
+                                        try:
+                                            candidates.extend([
+                                                ctx.locator('[role="option"]').filter(has_text=part).first,
+                                                ctx.locator('[role="menuitem"]').filter(has_text=part).first,
+                                                ctx.locator('[role="link"]').filter(has_text=part).first,
+                                                ctx.locator('a').filter(has_text=part).first,
+                                            ])
+                                        except Exception:
+                                            pass
+                            
                             clicked = False
                             for cand in candidates:
                                 try:
@@ -394,10 +646,23 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                                         (_page if ctx is _page else ctx.page).wait_for_timeout(200)
                                         clicked = True
                                         break
-                                except Exception:
+                                except Exception as e:
+                                    if DEBUG:
+                                        print(f"    [DEBUG] Candidate failed: {e}")
                                     continue
                             if clicked:
                                 return driver_pb2.ActResponse(ok=True)
+                            
+                            # Last resort: try to find ANY visible option/menuitem/link in a dropdown and click it if only one is available
+                            try:
+                                all_options = ctx.locator('[role="option"]:visible, [role="menuitem"]:visible, [role="listbox"] a:visible')
+                                if all_options.count() == 1:
+                                    all_options.first.click(timeout=5000)
+                                    (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                                    return driver_pb2.ActResponse(ok=True)
+                            except Exception:
+                                pass
+                            
                             # Fall through to default path if not clicked
 
                         # Default path
@@ -411,6 +676,39 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)
+                
+                # All selectors failed - try smart locate as fallback
+                if DEBUG:
+                    print(f"  [DEBUG] All selectors failed, trying SmartLocate...")
+                
+                # Extract description from selector (label from role=X[name="Y"])
+                description = None
+                for sel in iter_selectors():
+                    if isinstance(sel, str):
+                        m = re.search(r'\[name="(.+?)"\]', sel)
+                        if m:
+                            description = m.group(1)
+                            break
+                
+                if description:
+                    try:
+                        smart_req = driver_pb2.SmartLocateRequest(
+                            description=description,
+                            failed_selector=request.selector or '',
+                            use_llm=True  # Enable LLM fallback
+                        )
+                        smart_resp = self.SmartLocate(smart_req, context)
+                        if smart_resp.ok and smart_resp.selector:
+                            if DEBUG:
+                                print(f"  [DEBUG] SmartLocate found: {smart_resp.selector} (strategy: {smart_resp.strategy})")
+                            # Try the smart selector
+                            ctx.locator(smart_resp.selector).first.click(timeout=5000)
+                            (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
+                            return driver_pb2.ActResponse(ok=True)
+                    except Exception as e:
+                        if DEBUG:
+                            print(f"  [DEBUG] SmartLocate also failed: {e}")
+                
                 return driver_pb2.ActResponse(ok=False, error=last_err or 'all selectors failed')
             elif t == 'scroll':
                 delta = request.delta or 600
@@ -423,7 +721,8 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                     try:
                         loc = ctx.locator(sel).first
                         loc.fill(str(request.text))
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(150)
+                        # Wait longer after typing to allow autocomplete/dropdown to populate
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(500)
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)
