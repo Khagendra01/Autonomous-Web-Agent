@@ -19,8 +19,6 @@ class AgentState(TypedDict):
     # Instruction/task info
     instruction: str  # Natural language instruction from user
     goal: str  # Parsed/normalized goal (defaults to instruction)
-    multiple_goal: Optional[List[str]]  # List of sequential goals if instruction contains multiple
-    current_goal: Optional[str]  # Current goal being worked on (first of multiple_goal if present)
     app_name: str
     base_url: str
     max_steps: int
@@ -49,7 +47,4 @@ class AgentState(TypedDict):
     # Anti-loop memory
     # Map of URL -> list of action keys that were already tried on that view
     tried_actions_by_url: Dict[str, List[str]]
-    
-    # Prioritization hints from evaluation
-    prioritized_roles: Optional[List[str]]  # Roles to prioritize in next scoring iteration (e.g., ['textbox', 'combobox'])
 

@@ -2,13 +2,11 @@ from typing import Any, Dict
 
 from ..state import AgentState
 from .common import driver_client
-from ..utils.logger import get_logger
 
 
 def observe_node(state: AgentState) -> Dict[str, Any]:
     """Observe the current page state via the driver."""
-    logger = get_logger()
-    logger.info(f"\n[OBSERVE] Step {state['step_count']}")
+    print(f"\n[OBSERVE] Step {state['step_count']}")
     
     # Get current page state (gRPC)
     observe = driver_client.observe()
@@ -31,7 +29,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         }
         for inter in observe.interactables
     ]
-    capped_interactables = all_interactables
+    capped_interactables = all_interactables[:200]
 
     # Update state
     updates = {
@@ -43,13 +41,13 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         'screenshots': state['screenshots'] + [screenshot_bytes],
     }
     
-    logger.info(f"  URL: {observe.url}")
+    print(f"  URL: {observe.url}")
     if len(all_interactables) > 200:
-        logger.info(f"  Found {len(all_interactables)} interactable elements (capped to 200)")
+        print(f"  Found {len(all_interactables)} interactable elements (capped to 200)")
     else:
-        logger.info(f"  Found {len(all_interactables)} interactable elements")
+        print(f"  Found {len(all_interactables)} interactable elements")
     if observe.errors:
-        logger.warning(f"  ⚠️  Errors detected: {list(observe.errors)}")
+        print(f"  ⚠️  Errors detected: {list(observe.errors)}")
     
     return updates
 

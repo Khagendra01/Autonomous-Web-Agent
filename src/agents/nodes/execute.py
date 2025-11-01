@@ -3,21 +3,18 @@ import requests
 
 from ..state import AgentState, ScoredAction
 from .common import driver_client
-from ..utils.logger import get_logger
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
     """Execute the highest-scored action."""
-    logger = get_logger()
-    
     action = state['next_action']
     
     if not action:
-        logger.warning(f"\n[EXECUTE] No action to execute")
+        print(f"\n[EXECUTE] No action to execute")
         return {'error': 'No valid action found'}
     
-    logger.info(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
-    logger.info(f"  Reasoning: {action.reasoning}")
+    print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
+    print(f"  Reasoning: {action.reasoning}")
     
     # Build action payload
     payload = {
@@ -57,13 +54,13 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         )
         
         if not result.ok:
-            logger.error(f"  ❌ Action failed: {result.error}")
+            print(f"  ❌ Action failed: {result.error}")
             return {
                 'error': result.error,
                 'stuck_count': state['stuck_count'] + 1
             }
         
-        logger.info(f"  ✓ Action executed successfully")
+        print(f"  ✓ Action executed successfully")
 
         # Post-action verification for typing: ensure text became visible; retry once if not
         if action.action_type == 'type' and action.text:
@@ -118,8 +115,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         }
         
     except Exception as e:
-        logger.error(f"  ❌ Exception during action: {e}")
-        logger.exception("Full exception traceback:")
+        print(f"  ❌ Exception during action: {e}")
         return {
             'error': str(e),
             'stuck_count': state['stuck_count'] + 1

@@ -8,17 +8,14 @@ from .workflow import create_agent_workflow
 from ..drivers.grpc_client import DriverClient
 from .state import AgentState
 from .utils.storage import RunStorage
-from .utils.logger import setup_logging, get_logger, AgentLogger
 from dotenv import load_dotenv
 
 
 def initialize_driver(app_name: str, start_url: str):
     """Initialize the Playwright driver."""
-    logger = get_logger()
-    
-    logger.info("=" * 60)
-    logger.info(f"🚀 Initializing driver for {app_name}")
-    logger.info("=" * 60)
+    print(f"\n{'='*60}")
+    print(f"🚀 Initializing driver for {app_name}")
+    print(f"{'='*60}")
     
     payload = {
         'app': app_name,
@@ -30,14 +27,14 @@ def initialize_driver(app_name: str, start_url: str):
         resp = client.init(app_name, start_url)
         if not resp.ok:
             raise RuntimeError(f"Driver initialization failed: {resp.error}")
-        logger.info(f"✓ Driver initialized successfully")
-        logger.info(f"✓ Navigated to: {start_url}")
+        print(f"✓ Driver initialized successfully")
+        print(f"✓ Navigated to: {start_url}")
         return True
     except Exception as e:
-        logger.error("\n❌ Cannot connect to driver!")
-        logger.error("Please start the gRPC driver server first:")
-        logger.error("  python -m src.drivers.grpc_playwright_server")
-        logger.error(f"Details: {e}")
+        print("\n❌ Cannot connect to driver!")
+        print("Please start the gRPC driver server first:")
+        print("  python -m src.drivers.grpc_playwright_server")
+        print(f"Details: {e}")
         return False
 
 
@@ -78,7 +75,21 @@ def run_task(
     if not instruction_only and not app_name and start_url:
         app_name = extract_app_name(start_url)
     
-    # Create storage with sanitized task name (need this first to get log file path)
+    print(f"\n{'='*60}")
+    if instruction_only:
+        print(f"📝 Instruction: {instruction}")
+    else:
+        print(f"🎯 Goal: {goal}")
+        print(f"🌐 Start URL: {start_url}")
+        print(f"📱 App: {app_name}")
+    print(f"{'='*60}")
+    
+    # Initialize driver only in explicit mode; in instruction-only mode, bootstrap node handles init
+    if not instruction_only:
+        if not initialize_driver(app_name, start_url):
+            return False
+    
+    # Create storage with sanitized task name
     import re
     task_slug_source = (goal or instruction or 'task').lower()
     task_slug = re.sub(r'[^a-z0-9_-]', '_', task_slug_source[:50])
@@ -89,38 +100,10 @@ def run_task(
         task_slug=task_slug
     )
     
-    # Set up logging to both console and file (do this early)
-    log_file_path = storage.get_log_file_path()
-    logger = setup_logging(
-        log_file_path=log_file_path,
-        level=20,  # INFO level
-        console_level=20  # INFO level
-    )
-    
-    logger.info("=" * 60)
-    if instruction_only:
-        logger.info(f"📝 Instruction: {instruction}")
-    else:
-        logger.info(f"🎯 Goal: {goal}")
-        logger.info(f"🌐 Start URL: {start_url}")
-        logger.info(f"📱 App: {app_name}")
-    logger.info("=" * 60)
-    
-    # Initialize driver only in explicit mode; in instruction-only mode, bootstrap node handles init
-    if not instruction_only:
-        if not initialize_driver(app_name, start_url):
-            return False
-    
-    logger.info("=" * 60)
-    logger.info("🤖 Starting autonomous agent workflow")
-    logger.info("=" * 60)
-    
     # Create initial state
     initial_state: AgentState = {
         'instruction': instruction or (goal or ''),
         'goal': goal or (instruction or ''),
-        'multiple_goal': None,
-        'current_goal': None,
         'app_name': app_name or '',
         'base_url': start_url or '',
         'max_steps': max_steps,
@@ -138,8 +121,12 @@ def run_task(
         'error': None,
         'stuck_count': 0,
         'tried_actions_by_url': {},
-        'prioritized_roles': [],
     }
+    
+    # Create and run workflow
+    print(f"\n{'='*60}")
+    print(f"🤖 Starting autonomous agent workflow")
+    print(f"{'='*60}")
     
     workflow = create_agent_workflow()
     
@@ -150,9 +137,9 @@ def run_task(
         })
         
         # Save results
-        logger.info("=" * 60)
-        logger.info("💾 Saving results")
-        logger.info("=" * 60)
+        print(f"\n{'='*60}")
+        print(f"💾 Saving results")
+        print(f"{'='*60}")
         
         # Save screenshots per step, pairing full and focused where available
         screenshots = final_state.get('screenshots') or []
@@ -164,14 +151,14 @@ def run_task(
             # Full screenshot for this step
             full_name = f"step_{step:03d}.png"
             storage.save_screenshot(screenshots[j], full_name)
-            logger.info(f"  Saved: {full_name}")
+            print(f"  Saved: {full_name}")
 
             # Optional focused screenshot for this step
             screenshot_list = [full_name]
             if step in focused_after_steps and (j + 1) < len(screenshots):
                 crop_name = f"step_{step:03d}_focus.png"
                 storage.save_screenshot(screenshots[j + 1], crop_name)
-                logger.info(f"  Saved: {crop_name}")
+                print(f"  Saved: {crop_name}")
                 # Bundle cropped image with its parent as a list
                 screenshot_list.append(crop_name)
                 j += 2
@@ -193,34 +180,30 @@ def run_task(
         storage.flush()
         
         # Print summary
-        logger.info("=" * 60)
-        logger.info("✅ Task completed!")
-        logger.info("=" * 60)
-        logger.info("📊 Summary:")
-        logger.info(f"  Steps taken: {final_state['step_count']}")
-        logger.info(f"  Screenshots captured: {len(final_state['screenshots'])}")
-        logger.info(f"  Goal reached: {'Yes ✓' if final_state['goal_reached'] else 'No ✗'}")
-        logger.info(f"  Output directory: {storage.root}")
-        logger.info(f"  Log file: {storage.get_log_file_path()}")
+        print(f"\n{'='*60}")
+        print(f"✅ Task completed!")
+        print(f"{'='*60}")
+        print(f"📊 Summary:")
+        print(f"  Steps taken: {final_state['step_count']}")
+        print(f"  Screenshots captured: {len(final_state['screenshots'])}")
+        print(f"  Goal reached: {'Yes ✓' if final_state['goal_reached'] else 'No ✗'}")
+        print(f"  Output directory: {storage.root}")
         
         if final_state.get('error'):
-            logger.error(f"  Error: {final_state['error']}")
+            print(f"  Error: {final_state['error']}")
         
-        logger.info("=" * 60)
+        print(f"\n{'='*60}")
         
         return True
         
     except KeyboardInterrupt:
-        logger.warning("\n\n⚠️  Interrupted by user")
+        print("\n\n⚠️  Interrupted by user")
         return False
     except Exception as e:
-        logger.error(f"\n\n❌ Error during workflow execution: {e}")
+        print(f"\n\n❌ Error during workflow execution: {e}")
         import traceback
-        logger.exception("Full traceback:")
+        traceback.print_exc()
         return False
-    finally:
-        # Always shutdown logger to ensure file is saved
-        AgentLogger.shutdown()
 
 
 def main():
