@@ -4,7 +4,6 @@ import re
 
 from ..state import AgentState, ScoredAction
 from .common import client
-from ..utils.logger import get_logger
 
 
 def _action_key_from_scored(action: ScoredAction) -> str:
@@ -80,14 +79,10 @@ def _get_role_priority_by_task(role: str, goal: str) -> float:
     
     # Form submission tasks
     if any(word in goal_lower for word in ['submit', 'save', 'send', 'post', 'publish', 'create']):
-        # Check if goal includes a named value (e.g., "create project called X" means we need to enter data)
-        has_named_value = any(pattern in goal_lower for pattern in ['called', 'named', 'titled', 'with name', 'with title'])
         if role_lower == 'button':
-            # Buttons still important, but less so if we need to enter data first
-            return base + (1.2 if has_named_value else 1.8)
+            return base + 1.8  # Strong boost for buttons on submit tasks
         if role_lower in ['textbox', 'combobox']:
-            # Inputs are critical when creating something with a specific name
-            return base + (1.5 if has_named_value else 0.8)
+            return base + 0.8  # Inputs important but secondary
     
     # Selection/choice tasks
     if any(word in goal_lower for word in ['select', 'choose', 'pick', 'option']):
@@ -120,8 +115,7 @@ def _prioritize_elements(
     interactables: List[Dict[str, Any]], 
     goal: str, 
     max_elements: int,
-    errors: List[str],
-    prioritized_roles: Optional[List[str]] = None
+    errors: List[str]
 ) -> List[Dict[str, Any]]:
     """Intelligently select and prioritize elements before sending to LLM.
     
@@ -161,28 +155,11 @@ def _prioritize_elements(
         keyword_score = min(matches * 2.0, 10.0)
         
         # 3. Error-related elements (if errors exist)
-        error_boost = 0.0
-        if errors:
-            # Boost elements that match error keywords
-            if any(keyword in text_to_search for keyword in error_keywords if len(keyword) > 2):
-                error_boost += 3.0
-            # CRITICAL: Strongly boost textbox/combobox when errors exist (errors often indicate missing input)
-            if role in ['textbox', 'combobox']:
-                error_boost += 5.0  # Strong boost for input fields when errors present
-                # Extra boost if error mentions "name", "required", or similar and element matches
-                if any(kw in error_keywords for kw in ['name', 'required', 'missing', 'empty']) and \
-                   any(kw in text_to_search for kw in ['name', 'project', 'title', 'input']):
-                    error_boost += 2.0  # Very specific match
-        keyword_score += error_boost
+        if errors and any(keyword in text_to_search for keyword in error_keywords if len(keyword) > 2):
+            keyword_score += 3.0
         
         # 4. Role priority (context-aware based on task)
         role_score = _get_role_priority_by_task(role, goal)
-        
-        # 4b. Prioritized roles boost (from evaluation feedback)
-        prioritized_boost = 0.0
-        if prioritized_roles and role in prioritized_roles:
-            prioritized_boost = 4.0  # Strong boost for roles that evaluation identified as critical
-        role_score += prioritized_boost
         
         # 5. Disabled penalty (but don't exclude completely - LLM should see them)
         disabled_penalty = -1.0 if elem.get('disabled', False) else 0.0
@@ -276,18 +253,8 @@ def _prioritize_elements(
 
 def score_actions_node(state: AgentState) -> Dict[str, Any]:
     """Use LLM to score which actions are most likely to advance the goal (app-agnostic)."""
-    # Use current_goal if multiple goals exist, otherwise fall back to goal
-    multiple_goals = state.get('multiple_goal')
-    current_goal = state.get('current_goal')
-    goal = current_goal if (multiple_goals and current_goal) else state.get('goal', '')
-    
-    logger = get_logger()
-    
-    if multiple_goals and current_goal:
-        goal_index = multiple_goals.index(current_goal) + 1 if current_goal in multiple_goals else 1
-        logger.info(f"\n[SCORE] Analyzing actions for goal {goal_index}/{len(multiple_goals)}: {goal}")
-    else:
-        logger.info(f"\n[SCORE] Analyzing actions for goal: {goal}")
+    goal = state.get('goal', '')
+    print(f"\n[SCORE] Analyzing actions for goal: {goal}")
 
     # Configurable parameters
     model_name = state.get('llm_model') or "gpt-4o"
@@ -302,57 +269,28 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     errors = state.get('errors') or []
     
     # Use intelligent prioritization instead of just taking first N elements
-    # Pass the active goal (current_goal if multiple goals exist, otherwise goal)
-    active_goal = current_goal if (multiple_goals and current_goal) else goal
-    prioritized_roles = state.get('prioritized_roles') or []
-    if prioritized_roles:
-        logger.info(f"  🎯 Using prioritized roles from evaluation: {', '.join(prioritized_roles)}")
     interactables = _prioritize_elements(
         interactables_full, 
-        active_goal, 
+        goal, 
         max_elements,
-        errors,
-        prioritized_roles
+        errors
     )
     
-    logger.info(f"  Selected {len(interactables)} elements from {len(interactables_full)} total (prioritized by relevance)")
-    if errors:
-        # Show which input fields were selected (for debugging)
-        input_fields = [e for e in interactables if e.get('role', '').lower() in ['textbox', 'combobox']]
-        if input_fields:
-            field_descriptions = [f"{e.get('role')}[name='{e.get('label', '')}']" for e in input_fields[:3]]
-            logger.info(f"  Input fields selected ({len(input_fields)}): {field_descriptions}")
-        else:
-            logger.warning(f"  ⚠️  No input fields (textbox/combobox) were selected despite errors present!")
+    print(f"  Selected {len(interactables)} elements from {len(interactables_full)} total (prioritized by relevance)")
 
     # Build action history summary
     history_summary = []
     for i, action in enumerate((state.get('action_history') or [])[-5:]):  # Last 5 actions
         history_summary.append(f"{i+1}. {action.get('type', '')} on '{action.get('label', 'N/A')}'")
 
-    # Build goal context for prompt
-    goal_context = goal
-    if multiple_goals and current_goal:
-        goal_index = multiple_goals.index(current_goal) + 1 if current_goal in multiple_goals else 1
-        goal_context = f"[Goal {goal_index}/{len(multiple_goals)}] {goal}"
-        if len(multiple_goals) > goal_index:
-            next_goals = ', '.join(multiple_goals[goal_index:])
-            goal_context += f"\n- Remaining goals: {next_goals}"
-    
-    # Build error context for prompt
-    error_context = ""
-    if errors:
-        error_context = f"\n⚠️  CRITICAL: Validation errors detected on page:\n{chr(10).join(f'  - {e}' for e in errors)}\n"
-        error_context += "These errors MUST be resolved before proceeding. Prioritize input fields (textbox/combobox) that match error keywords (e.g., 'name', 'required', 'project name').\n"
-    
     prompt = f"""You are assisting an autonomous web agent. Score interactive elements by how likely they are to help achieve the goal.
 
 Context:
-- Goal: {goal_context}
+- Goal: {state.get('goal', '')}
 - Instruction: {state.get('instruction', '')}
 - Current URL: {state.get('current_url', '')}
 - Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}
-{error_context}
+
 Available Interactive Elements (truncated):
 {json.dumps(interactables, indent=2)}
 
@@ -370,7 +308,7 @@ Generic principles:
 3) If the goal requires data entry, prioritize relevant input fields; if submission is clearly required and ready, prioritize submission controls.
 4) If no strong candidates exist, include low-risk exploration (e.g., scroll/open menu) to reveal options.
 5) Avoid repeating recently ineffective actions.
-6) **CRITICAL**: If there are validation errors, you MUST prioritize input fields (textbox/combobox) that match the error context. For example, if error says "Project name required", prioritize any textbox with label/placeholder/id containing "name" or "project". Errors must be resolved before clicking submit buttons.
+6) If there are validation errors, prioritize actions that resolve them.
 
 Selector guidance:
 - Use a single, specific selector (no commas). Prefer role-based selectors, e.g., role=button[name="…"], role=textbox[name="…"].
@@ -391,7 +329,7 @@ Return ONLY a JSON array of objects like:
         )
         content = (response.choices[0].message.content or "").strip()
     except Exception as e:
-        logger.error(f"  Scoring LLM call failed: {e}")
+        print(f"  Scoring LLM call failed: {e}")
         return {
             'scored_actions': [],
             'next_action': None,
@@ -437,18 +375,18 @@ Return ONLY a JSON array of objects like:
     # Sort by score descending
     adjusted: List[ScoredAction] = sorted(deduped, key=lambda x: float(x.score or 0.0), reverse=True)
 
-    logger.info(f"  Scored {len(adjusted)} actions (deduped)")
+    print(f"  Scored {len(adjusted)} actions (deduped)")
     for i, action in enumerate(adjusted[:3]):
-        logger.info(f"  {i+1}. [{action.score:.1f}] {action.action_type} '{action.label}' - {action.reasoning}")
+        print(f"  {i+1}. [{action.score:.1f}] {action.action_type} '{action.label}' - {action.reasoning}")
 
     if adjusted:
         top_score = adjusted[0].score
         same_group = [a for a in adjusted if a.score >= top_score - 1.0][:8]
         if len(same_group) > 1:
-            logger.info("  Same-score group (±1.0 from top):")
+            print("  Same-score group (±1.0 from top):")
             for a in same_group:
                 suffix = f" → type text='{a.text}'" if (a.action_type == 'type' and a.text) else ""
-                logger.info(f"    - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix}")
+                print(f"    - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix}")
 
     # Choose action based on retry logic: try first action twice before moving to second
     chosen_action: Optional[ScoredAction] = None
@@ -471,19 +409,18 @@ Return ONLY a JSON array of objects like:
         # If we've tried the first action 2 or more times, move to the second action
         if retry_count >= 2 and len(adjusted) > 1:
             chosen_action = adjusted[1]
-            logger.info(f"  [RETRY LOGIC] First action tried {retry_count} times, choosing second action")
-            logger.info(f"  Chosen: [{chosen_action.score:.1f}] {chosen_action.action_type} '{chosen_action.label}'")
+            print(f"  [RETRY LOGIC] First action tried {retry_count} times, choosing second action")
+            print(f"  Chosen: [{chosen_action.score:.1f}] {chosen_action.action_type} '{chosen_action.label}'")
         else:
             chosen_action = first_action
             if retry_count > 0:
-                logger.info(f"  [RETRY LOGIC] First action tried {retry_count} time(s), retrying (max 2 attempts)")
-            logger.info(f"  Chosen: [{chosen_action.score:.1f}] {chosen_action.action_type} '{chosen_action.label}'")
+                print(f"  [RETRY LOGIC] First action tried {retry_count} time(s), retrying (max 2 attempts)")
+            print(f"  Chosen: [{chosen_action.score:.1f}] {chosen_action.action_type} '{chosen_action.label}'")
     else:
-        logger.warning("  No actions available to choose")
+        print("  No actions available to choose")
 
     return {
         'scored_actions': adjusted,
         'next_action': chosen_action,
     }
-
 

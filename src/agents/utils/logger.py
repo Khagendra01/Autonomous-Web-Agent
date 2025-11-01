@@ -152,3 +152,114 @@ def setup_logging(
     """
     return AgentLogger.setup(log_file_path, level, console_level)
 
+
+def log_agent_state(state: dict, step_label: str = ""):
+    """
+    Log detailed agent state information to the log file.
+    
+    Args:
+        state: The AgentState dictionary
+        step_label: Optional label for this state snapshot (e.g., "After Step 3")
+    """
+    logger = get_logger()
+    import json
+    
+    logger.info("")
+    logger.info("=" * 60)
+    if step_label:
+        logger.info(f"[STATE] {step_label}")
+    else:
+        logger.info("[STATE] Current Agent State")
+    logger.info("=" * 60)
+    
+    # Basic info
+    logger.info(f"Step Count: {state.get('step_count', 0)}")
+    logger.info(f"Goal: {state.get('goal', 'N/A')}")
+    logger.info(f"Current URL: {state.get('current_url', 'N/A')}")
+    logger.info(f"Goal Reached: {state.get('goal_reached', False)}")
+    logger.info(f"App Name: {state.get('app_name', 'N/A')}")
+    logger.info(f"Base URL: {state.get('base_url', 'N/A')}")
+    
+    # Status
+    if state.get('error'):
+        logger.info(f"Error: {state.get('error')}")
+    if state.get('stuck_count', 0) > 0:
+        logger.info(f"Stuck Count: {state.get('stuck_count', 0)}")
+    
+    # Prioritized roles
+    prioritized = state.get('prioritized_roles')
+    if prioritized:
+        logger.info(f"Prioritized Roles: {prioritized}")
+    
+    # Action history
+    action_history = state.get('action_history', [])
+    logger.info(f"\nAction History ({len(action_history)} actions):")
+    for i, action in enumerate(action_history):
+        action_str = json.dumps(action, indent=2, default=str) if isinstance(action, dict) else str(action)
+        logger.info(f"  [{i}] {action_str}")
+    
+    # Scored actions (summary)
+    scored_actions = state.get('scored_actions', [])
+    if scored_actions:
+        logger.info(f"\nScored Actions ({len(scored_actions)} total):")
+        for i, scored in enumerate(scored_actions[:5]):  # Show top 5
+            try:
+                if hasattr(scored, 'action_type'):
+                    score_val = getattr(scored, 'score', 0)
+                    action_type = getattr(scored, 'action_type', 'unknown')
+                    label = getattr(scored, 'label', 'N/A')
+                    logger.info(f"  [{i+1}] [{score_val:.1f}] {action_type} '{label}'")
+                    text = getattr(scored, 'text', None)
+                    if text:
+                        logger.info(f"      Text: '{text}'")
+                elif isinstance(scored, dict):
+                    logger.info(f"  [{i+1}] [{scored.get('score', 0):.1f}] {scored.get('action_type', 'unknown')} '{scored.get('label', 'N/A')}'")
+                    if scored.get('text'):
+                        logger.info(f"      Text: '{scored.get('text')}'")
+            except Exception as e:
+                logger.info(f"  [{i+1}] (Error displaying action: {e})")
+        if len(scored_actions) > 5:
+            logger.info(f"  ... and {len(scored_actions) - 5} more")
+    
+    # Next action
+    next_action = state.get('next_action')
+    if next_action:
+        try:
+            if hasattr(next_action, 'action_type'):
+                logger.info(f"\nNext Action: {getattr(next_action, 'action_type', 'unknown')} '{getattr(next_action, 'label', 'N/A')}' (score: {getattr(next_action, 'score', 0):.1f})")
+                logger.info(f"  Selector: {getattr(next_action, 'selector', 'N/A')}")
+                text = getattr(next_action, 'text', None)
+                if text:
+                    logger.info(f"  Text: '{text}'")
+                reasoning = getattr(next_action, 'reasoning', 'N/A')
+                logger.info(f"  Reasoning: {reasoning}")
+            elif isinstance(next_action, dict):
+                logger.info(f"\nNext Action: {next_action.get('action_type', 'unknown')} '{next_action.get('label', 'N/A')}' (score: {next_action.get('score', 0):.1f})")
+                logger.info(f"  Selector: {next_action.get('selector', 'N/A')}")
+                if next_action.get('text'):
+                    logger.info(f"  Text: '{next_action.get('text')}'")
+                logger.info(f"  Reasoning: {next_action.get('reasoning', 'N/A')}")
+        except Exception as e:
+            logger.info(f"\nNext Action: (Error displaying: {e})")
+    
+    # Errors list
+    errors = state.get('errors', [])
+    if errors:
+        logger.info(f"\nErrors List ({len(errors)}):")
+        for error in errors:
+            logger.info(f"  - {error}")
+    
+    # Tried actions by URL (anti-loop memory)
+    tried_by_url = state.get('tried_actions_by_url', {})
+    if tried_by_url:
+        logger.info(f"\nTried Actions by URL ({len(tried_by_url)} URLs):")
+        for url, actions in tried_by_url.items():
+            logger.info(f"  {url[:60]}...: {len(actions)} actions tried")
+    
+    # Interactable elements count
+    interactables = state.get('interactable_elements', [])
+    logger.info(f"\nInteractable Elements: {len(interactables)}")
+    
+    logger.info("=" * 60)
+    logger.info("")
+

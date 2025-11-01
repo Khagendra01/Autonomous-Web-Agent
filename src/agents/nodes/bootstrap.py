@@ -1,38 +1,9 @@
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict
 import json
 import requests
-import re
 
 from ..state import AgentState
 from .common import client, driver_client
-from ..utils.logger import get_logger
-
-
-def _parse_multiple_goals(instruction: str) -> Tuple[Optional[List[str]], str]:
-    """
-    Parse instruction to detect multiple sequential goals.
-    Returns (multiple_goals_list, first_goal) if multiple goals detected, else (None, instruction).
-    
-    Example: "go to issues and filter by inprogress and change the status of clean up ui to done in linear"
-    -> (["go to issues", "filter by inprogress", "change the status of clean up ui to done in linear"], "go to issues")
-    """
-    # Simple heuristic: split by " and " that appear to separate sequential actions
-    # We'll look for patterns like "action1 and action2 and action3"
-    # Split by " and " with spaces to avoid splitting within phrases
-    parts = re.split(r'\s+and\s+', instruction, flags=re.IGNORECASE)
-    
-    # If we only have one part, no multiple goals
-    if len(parts) <= 1:
-        return None, instruction
-    
-    # Filter out very short parts (likely false positives from splitting)
-    meaningful_parts = [p.strip() for p in parts if len(p.strip()) > 5]
-    
-    # If we have 2+ meaningful parts, treat as multiple goals
-    if len(meaningful_parts) >= 2:
-        return meaningful_parts, meaningful_parts[0]
-    
-    return None, instruction
 
 
 def bootstrap_node(state: AgentState) -> Dict[str, Any]:
@@ -40,26 +11,12 @@ def bootstrap_node(state: AgentState) -> Dict[str, Any]:
 
     This enables instruction-only runs without explicit goal/URL flags.
     """
-    logger = get_logger()
-    
     instruction = state.get('instruction') or state.get('goal') or ''
-    logger.info(f"\n[BOOTSTRAP] Inferring app and base URL from instruction: '{instruction}'")
-    
-    # Parse multiple sequential goals if present
-    multiple_goals, first_goal = _parse_multiple_goals(instruction)
-    if multiple_goals:
-        logger.info(f"[BOOTSTRAP] Detected {len(multiple_goals)} sequential goals:")
-        for i, goal in enumerate(multiple_goals, 1):
-            logger.info(f"  {i}. {goal}")
-        logger.info(f"[BOOTSTRAP] Starting with first goal: '{first_goal}'")
-        # Use first goal for app/URL inference
-        instruction_for_inference = first_goal
-    else:
-        instruction_for_inference = instruction
+    print(f"\n[BOOTSTRAP] Inferring app and base URL from instruction: '{instruction}'")
 
     prompt = f"""Given the user's instruction, infer the most likely web application and base URL to start from.
 
-Instruction: "{instruction_for_inference}"
+Instruction: "{instruction}"
 
 Return ONLY a JSON object with:
 {{
@@ -85,12 +42,12 @@ Return ONLY a JSON object with:
 
     app_name = ""
     base_url = ""
-    normalized_goal = instruction_for_inference
+    normalized_goal = instruction
     try:
         parsed = json.loads(content)
         app_name = parsed.get('app_name') or ""
         base_url = parsed.get('base_url') or ""
-        normalized_goal = parsed.get('normalized_goal') or instruction_for_inference
+        normalized_goal = parsed.get('normalized_goal') or instruction
     except Exception:
         pass
 
@@ -102,27 +59,15 @@ Return ONLY a JSON object with:
         r = driver_client.init(app_name or 'WebApp', base_url)
         if not r.ok:
             raise RuntimeError(r.error or 'Driver init failed')
-        logger.info(f"  ✓ Driver initialized at {base_url}")
+        print(f"  ✓ Driver initialized at {base_url}")
     except Exception as e:
-        logger.error(f"  ❌ Driver init error: {e}")
+        print(f"  ❌ Driver init error: {e}")
         return { 'error': str(e) }
 
-    # Prepare return values
-    result = {
-        'goal': normalized_goal if not multiple_goals else first_goal,
+    return {
+        'goal': normalized_goal,
         'app_name': app_name or 'WebApp',
         'base_url': base_url,
         'current_url': base_url,
     }
-    
-    # Add multiple goal tracking if multiple goals were detected
-    if multiple_goals:
-        result['multiple_goal'] = multiple_goals
-        result['current_goal'] = first_goal
-    else:
-        result['multiple_goal'] = None
-        result['current_goal'] = None
-    
-    return result
-
 
