@@ -63,10 +63,74 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         print(f"  ✓ Action executed successfully")
 
         # Post-action verification for typing: ensure text became visible; retry once if not
+        # Also handle generic dropdown selection: after typing, automatically select first dropdown option if available
         if action.action_type == 'type' and action.text:
+            typed_text = str(action.text).strip()
+            
+            # Wait a bit for dropdown/autocomplete to appear after typing
+            try:
+                driver_client.act(type='await', kind='timeout', timeout=800)
+            except Exception:
+                pass
+            
+            # Try to find and click the first available dropdown option
+            # This works for any combobox/autocomplete/dropdown scenario
+            print(f"  🔍 Checking for dropdown options...")
+            option_clicked = False
+            
+            # Observe the page to get current interactable elements and find the first dropdown option
+            try:
+                observe_result = driver_client.observe()
+                # Look for the first visible option/menuitem from open dropdowns
+                # Priority: option > menuitem > link (to avoid clicking page links accidentally)
+                # First pass: only look for options and menuitems (typical dropdown types)
+                for element in observe_result.interactables:
+                    role = element.role
+                    if role in ('option', 'menuitem'):
+                        if not element.disabled and element.selector:
+                            # Try to click this option using its selector
+                            try:
+                                result = driver_client.act(type='click', selector=element.selector)
+                                if result.ok:
+                                    print(f"  ✓ Selected first dropdown option: '{element.label}'")
+                                    option_clicked = True
+                                    # Wait a bit after selection for UI to update
+                                    try:
+                                        driver_client.act(type='await', kind='timeout', timeout=300)
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception:
+                                continue
+                
+                # Second pass: if no option/menuitem found, try links (some dropdowns use links)
+                if not option_clicked:
+                    for element in observe_result.interactables:
+                        role = element.role
+                        if role == 'link':
+                            if not element.disabled and element.selector:
+                                try:
+                                    result = driver_client.act(type='click', selector=element.selector)
+                                    if result.ok:
+                                        print(f"  ✓ Selected first dropdown option: '{element.label}'")
+                                        option_clicked = True
+                                        try:
+                                            driver_client.act(type='await', kind='timeout', timeout=300)
+                                        except Exception:
+                                            pass
+                                        break
+                                except Exception:
+                                    continue
+            except Exception as e:
+                # If observe fails, silently continue - no dropdown detection
+                pass
+            
+            if not option_clicked:
+                print(f"  ℹ️  No dropdown options found, continuing...")
+            
             try:
                 # Assert the typed text is present in page text
-                verify = driver_client.act(type='assert', kind='text_present', text=str(action.text))
+                verify = driver_client.act(type='assert', kind='text_present', text=typed_text)
                 ok = bool(verify.ok)
                 if not ok:
                     # If focus likely still on title and we intended body, send Enter handoff then retype once
@@ -77,7 +141,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
                     try:
                         driver_client.act(type=payload['type'], selector=payload.get('selector'), text=payload.get('text'))
                         # One last check
-                        driver_client.act(type='assert', kind='text_present', text=str(action.text))
+                        driver_client.act(type='assert', kind='text_present', text=typed_text)
                     except Exception:
                         pass
             except Exception:
@@ -95,14 +159,28 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             action_record['text'] = action.text
         
         # Record this action as tried for the current URL to avoid repeating it
+        # Dynamic retry: allow each action 2 attempts before marking as tried
         current_url = state.get('current_url') or ''
         tried_map = dict(state.get('tried_actions_by_url') or [])
         if not isinstance(tried_map, dict):
             tried_map = {}
         tried_here = list(tried_map.get(current_url, []))
         action_key = f"{action.action_type}|{action.selector}"
-        if action_key not in tried_here:
-            tried_here.append(action_key)
+        
+        # Count how many times this exact action was tried in recent history
+        recent_actions = state.get('action_history') or []
+        same_action_count = sum(
+            1 for a in recent_actions[-10:]  # Check last 10 actions
+            if a.get('selector') == action.selector and a.get('type') == action.action_type
+        )
+        
+        # Only mark as tried after 2 attempts (count >= 1 means this is the 2nd attempt)
+        if same_action_count >= 1:
+            if action_key not in tried_here:
+                tried_here.append(action_key)
+                print(f"  ℹ️  Action tried {same_action_count + 1} times, marking as tried - will explore other options")
+        # Don't mark on first attempt - allows natural retry through decision node
+        
         tried_map[current_url] = tried_here
         
         return {

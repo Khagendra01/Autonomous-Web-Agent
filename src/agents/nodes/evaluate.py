@@ -116,6 +116,11 @@ Return ONLY valid JSON:
         except Exception:
             print("  Missing steps: (unprintable)")
 
-    return { 'goal_reached': goal_reached }
+    # Store goal evaluation details for decision node to use
+    return {
+        'goal_reached': goal_reached,
+        'goal_evaluation_reasoning': reasoning,
+        'goal_missing_steps': missing_steps,
+    }
 
 
