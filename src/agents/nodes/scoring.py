@@ -1,4 +1,4 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import json
 import re
 
@@ -40,12 +40,181 @@ def _extract_json_array(text: str) -> Optional[List[Any]]:
     return None
 
 
+def _detect_active_context(
+    state: AgentState, 
+    interactables: List[Dict[str, Any]]
+) -> Tuple[Optional[str], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Detect if we're in an active context (form/modal/dropdown) after a context-changing action.
+    Returns: (context_type, context_elements, background_elements)
+    - context_type: 'form', 'dropdown', 'menu', or None
+    - context_elements: Elements that belong to the active context
+    - background_elements: Elements from the page behind the context
+    """
+    action_history = state.get('action_history', [])
+    if not action_history:
+        return None, [], []
+    
+    last_action = action_history[-1]
+    last_label = last_action.get('label', '').lower()
+    last_action_type = last_action.get('type', '')
+    
+    # Check if context should expire
+    active_context_info = state.get('active_context')
+    if active_context_info:
+        context_step_count = active_context_info.get('step_count', 0)
+        current_step = state.get('step_count', 0)
+        # Expire after 3 steps
+        if current_step - context_step_count >= 3:
+            return None, [], []
+    
+    # Pattern 1: Context-changing button/link labels
+    context_triggers = ['create', 'message', 'new', 'add', 'compose', 'open', 'edit', 'write']
+    is_context_action = (
+        last_action_type == 'click' and 
+        any(trigger in last_label for trigger in context_triggers)
+    )
+    
+    # Pattern 2: Element count surge (indicates new UI opened)
+    prev_count = state.get('prev_interactable_count', 0)
+    current_count = len(interactables)
+    element_surge = current_count > prev_count + 10  # Threshold: +10 new elements
+    
+    # Pattern 3: Check for combobox/dropdown interaction
+    is_dropdown_action = (
+        last_action_type == 'click' and
+        any(term in last_label.lower() for term in ['select', 'choose', 'pick', 'dropdown'])
+    )
+    
+    # Conservative detection: require at least one strong signal
+    if not (is_context_action or element_surge or is_dropdown_action):
+        return None, [], []
+    
+    # Identify context-relevant elements based on semantic patterns
+    context_elements = []
+    background_elements = []
+    
+    for elem in interactables:
+        role = elem.get('role', '').lower()
+        label = (elem.get('label') or '').lower()
+        placeholder = (elem.get('placeholder') or '').lower()
+        elem_id = (elem.get('id') or '').lower()
+        elem_classes = ' '.join(elem.get('classes', [])).lower()
+        
+        # Heuristic 1: Form-related elements (for forms/modals)
+        is_form_element = False
+        is_form_related = False
+        
+        if role in ['textbox', 'combobox']:
+            # Check if it's a form input with relevant labels/placeholders
+            form_keywords = [
+                'recipient', 'to', 'subject', 'message', 'body', 'content',
+                'title', 'name', 'email', 'from', 'cc', 'bcc',
+                'type the name', 'add subject', 'edit message', 'compose',
+                'enter', 'write', 'input'
+            ]
+            combined_text = f"{label} {placeholder} {elem_id} {elem_classes}"
+            is_form_element = any(keyword in combined_text for keyword in form_keywords)
+            
+            # Also check for common form field patterns
+            if placeholder and ('type' in placeholder or 'add' in placeholder or 'enter' in placeholder):
+                is_form_related = True
+        
+        # Heuristic 2: Submit/action buttons within context
+        is_submit_button = False
+        if role == 'button':
+            submit_keywords = ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish']
+            is_submit_button = any(keyword in label for keyword in submit_keywords)
+        
+        # Heuristic 3: Dropdown options (for dropdown context)
+        is_dropdown_option = role == 'option'
+        
+        # Heuristic 4: Menu items (for menu context)
+        is_menu_item = role in ['menuitem', 'menuitemcheckbox', 'menuitemradio']
+        
+        # Determine if element is context-relevant
+        if is_form_element or is_form_related or is_submit_button:
+            # Form context
+            if is_context_action or element_surge:
+                context_elements.append(elem)
+            else:
+                background_elements.append(elem)
+        elif is_dropdown_option and is_dropdown_action:
+            # Dropdown context
+            context_elements.append(elem)
+        elif is_menu_item:
+            # Menu context
+            context_elements.append(elem)
+        else:
+            # Everything else is background
+            background_elements.append(elem)
+    
+    # Determine context type
+    if context_elements:
+        if any(elem.get('role', '').lower() in ['textbox', 'combobox'] for elem in context_elements):
+            context_type = 'form'
+        elif any(elem.get('role', '').lower() == 'option' for elem in context_elements):
+            context_type = 'dropdown'
+        elif any(elem.get('role', '').lower() in ['menuitem', 'menuitemcheckbox'] for elem in context_elements):
+            context_type = 'menu'
+        else:
+            context_type = 'active_context'
+        
+        return context_type, context_elements, background_elements
+    
+    return None, [], []
+
+
 def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str, Any]]) -> str:
     """Build dynamic context hints based on current state (Option 6: dynamic prompting)."""
     hints = []
     action_history = state.get('action_history') or []
     errors = state.get('errors') or []
     step_count = state.get('step_count', 0)
+    
+    # Context: Active context detection (form/modal/dropdown)
+    context_type, context_elements, background_elements = _detect_active_context(state, interactables)
+    if context_type:
+        last_action = action_history[-1] if action_history else {}
+        last_label = last_action.get('label', 'N/A')
+        
+        # Build context hint with element counts and guidance
+        context_elem_count = len(context_elements)
+        bg_elem_count = len(background_elements)
+        
+        if context_type == 'form':
+            hints.append(
+                f"🎯 ACTIVE CONTEXT: After clicking '{last_label}', a {context_type} opened with {context_elem_count} form-related elements. "
+                f"Elements that belong to this form (inputs, submit buttons) should be prioritized with +2-3 score boost. "
+                f"Background elements from the page ({bg_elem_count} elements like navigation links, dashboard widgets) should be deprioritized with -2-3 penalty. "
+                f"Focus on completing the form workflow before interacting with background elements."
+            )
+        elif context_type == 'dropdown':
+            hints.append(
+                f"🎯 ACTIVE CONTEXT: A {context_type} is open with {context_elem_count} options. "
+                f"Prioritize selecting from these options (+2-3 boost) over background elements ({bg_elem_count} elements, -2-3 penalty)."
+            )
+        elif context_type == 'menu':
+            hints.append(
+                f"🎯 ACTIVE CONTEXT: A {context_type} is open with {context_elem_count} menu items. "
+                f"Prioritize menu selections (+2-3 boost) over background elements ({bg_elem_count} elements, -2-3 penalty)."
+            )
+        else:
+            hints.append(
+                f"🎯 ACTIVE CONTEXT: New UI context opened ({context_elem_count} context elements, {bg_elem_count} background elements). "
+                f"Prioritize context elements (+2-3 boost) over background (-2-3 penalty)."
+            )
+        
+        # Update state to track active context for lifecycle management
+        state['active_context'] = {
+            'type': context_type,
+            'step_count': step_count,
+            'last_action_label': last_label
+        }
+    elif state.get('active_context'):
+        # Context was previously active but is no longer detected - clear it
+        # This happens when the form/modal was closed
+        state['active_context'] = None
     
     # Context: Error resolution priority
     if errors:

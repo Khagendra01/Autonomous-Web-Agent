@@ -31,6 +31,10 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     ]
     capped_interactables = all_interactables[:200]
 
+    # Track previous interactable count for surge detection
+    current_count = len(all_interactables)
+    prev_count = state.get('prev_interactable_count', 0)
+    
     # Update state
     updates = {
         'current_url': observe.url,
@@ -39,6 +43,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         'errors': list(observe.errors),
         'screenshot_bytes': screenshot_bytes,
         'screenshots': state['screenshots'] + [screenshot_bytes],
+        'prev_interactable_count': current_count,  # Store current count for next step
     }
     
     print(f"  URL: {observe.url}")
