@@ -58,6 +58,59 @@ def _choose_fallback(base_list: List[ScoredAction]) -> Optional[ScoredAction]:
     )[0]
 
 
+def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str, Any]]) -> str:
+    """Build dynamic context hints for decision-making (Option 6: dynamic prompting)."""
+    hints = []
+    action_history = state.get('action_history') or []
+    errors = state.get('errors') or []
+    step_count = state.get('step_count', 0)
+    scored_actions = state.get('scored_actions') or []
+    
+    # Context: Error resolution priority
+    if errors:
+        error_summary = ', '.join(str(e)[:50] for e in errors[:3])
+        # Check if any candidates are error-resolving
+        has_error_fixers = any(
+            'fix' in (c.get('label') or '').lower() or
+            'correct' in (c.get('label') or '').lower() or
+            'resolve' in (c.get('label') or '').lower() or
+            c.get('score', 0) >= 8
+            for c in candidates
+        )
+        if has_error_fixers:
+            hints.append(f"⚠️ CRITICAL: Validation errors detected: {error_summary}. Prioritize error-resolving actions (high-scored candidates). Avoid actions blocked by validation errors.")
+    
+    # Context: Redundancy detection (combobox)
+    if action_history:
+        last_action = action_history[-1]
+        if last_action.get('type') == 'type':
+            typed_text = last_action.get('text', '').strip().lower()
+            if typed_text:
+                # Check candidates for matching dropdown options
+                matching_candidates = [
+                    c.get('label') for c in candidates
+                    if c.get('action_type') == 'click' and
+                    (typed_text in (c.get('label') or '').lower() or
+                     (c.get('label') or '').lower() in typed_text)
+                ]
+                if matching_candidates:
+                    hints.append(f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox. Candidate dropdown options matching this text ({', '.join(matching_candidates[:2])}) are likely redundant - the field already contains this value. AVOID selecting these; prefer moving to next field, submitting, or other productive actions.")
+    
+    # Context: Goal completion readiness
+    if scored_actions:
+        top_scores = [a.score for a in scored_actions[:3] if hasattr(a, 'score')]
+        if top_scores and all(s >= 8.0 for s in top_scores):
+            hints.append("✅ HIGH CONFIDENCE: Multiple high-scoring candidates (≥8.0) detected. These likely represent goal-critical actions. Prioritize these over exploration.")
+    
+    # Context: Exploration stage
+    if step_count < 3:
+        hints.append("🔍 EARLY STAGE: Task just started. If goal-directed actions are unclear, prefer low-risk exploration (scroll, open menus) to discover options.")
+    elif step_count > 15:
+        hints.append("⚠️ MANY STEPS TAKEN: Task has been ongoing. If goal is not clear, re-evaluate strategy. Consider whether submission/completion actions should be prioritized.")
+    
+    return '\n'.join(hints) if hints else ""
+
+
 def decide_action_node(state: AgentState) -> Dict[str, Any]:
     """Choose the next action from scored candidates using LLM with robust fallbacks.
 
@@ -93,38 +146,74 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     goal = state.get('goal') or ''
     instruction = state.get('instruction') or ''
     current_url_str = state.get('current_url') or ''
+    step_count = state.get('step_count', 0)
 
-    prompt = f"""You are an autonomous web agent policy. Choose the best next UI action by index.
+    # Build dynamic context hints (Option 6)
+    dynamic_hints = _build_dynamic_decision_context(state, candidates)
 
-Context:
-- Goal: {goal}
-- Instruction: {instruction}
-- Current URL: {current_url_str}
-- Errors/Validation: {json.dumps(errors)}
-- Recent actions (last 5): {json.dumps(recent)}
+    # Build structured prompt with clear sections (Option 2)
+    prompt = f"""# ROLE & OBJECTIVE
+You are an autonomous web agent's decision module. Your task is to select the single best next UI action from scored candidates to advance toward the user's goal.
 
-Candidates (select one by index 'i'):
+# CONTEXT
+Goal: {goal}
+Instruction: {instruction}
+Current URL: {current_url_str}
+Step Count: {step_count}
+
+Errors/Validation Issues:
+{json.dumps(errors, indent=2) if errors else "None"}
+
+Recent Actions (last 5):
+{json.dumps(recent, indent=2) if recent else "None"}
+
+{"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
+# CANDIDATE ACTIONS
+Select one candidate by its index 'i':
 {json.dumps(candidates, indent=2)}
 
-Decision principles (generic, app-agnostic):
-1) Prefer actions that clearly advance the stated goal.
-2) When high-quality options are absent, prefer low-risk exploration (e.g., scroll, open menu) to reveal better options.
-3) If validation or error signals exist, prioritize resolving them.
-4) Avoid repeating ineffective recent actions.
-5) Be honest about candidate quality in the rationale.
+# DECISION PRINCIPLES
 
+## Goal Advancement (CRITICAL)
+- Prefer actions that clearly advance the stated goal
+- Consider how each candidate's score and reasoning relate to the goal
+- If multiple high-scoring options exist, choose the one with clearest goal alignment
+
+## Error Resolution (CRITICAL)
+- If validation or error signals exist, prioritize resolving them (see Dynamic Context Hints)
+- Avoid actions blocked by validation errors
+- Error resolution typically takes precedence over goal progression
+
+## Efficiency & Avoidance (IMPORTANT)
+- Avoid repeating ineffective recent actions
+- When high-quality goal-directed options are absent, prefer low-risk exploration (scroll, open menu)
+- Balance immediate goal progress with necessary discovery
+
+## Rationale Quality (IMPORTANT)
+- Be honest about candidate quality in your rationale
+- Explain why the chosen action is best given current context
+- If all candidates are weak, acknowledge this and choose the least risky option
+
+## Text Override Guidance
+- For type actions, you may override the suggested text if you have a better value
+- Use textOverride only when you're confident the override improves goal progress
+- Leave textOverride as null if the candidate's original text is appropriate
+
+# OUTPUT FORMAT
 Return ONLY valid JSON:
 {{
-  "i": <candidate index>,
-  "rationale": "brief why this action is best",
-  "textOverride": "optional text for type actions or null"
+  "i": <candidate index (0-based)>,
+  "rationale": "2-3 sentence explanation of why this action is best",
+  "textOverride": "optional text for type actions, or null"
 }}"""
 
+    system_message = """You are an autonomous web agent's decision module. Your role is to select the optimal next UI action from scored candidates. You must make principled decisions based on goal alignment, error resolution priorities, and efficiency. Return only valid JSON following the specified format."""
+    
     try:
         response = client.chat.completions.create(
             model=model_name,
             messages=[
-                {"role": "system", "content": "You are an autonomous web navigation agent. Return only valid JSON."},
+                {"role": "system", "content": system_message},
                 {"role": "user", "content": prompt},
             ]
         )
