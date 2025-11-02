@@ -1,45 +1,17 @@
 from typing import Any, Dict, List, Optional, Tuple
 import json
-import re
 
 from ..state import AgentState, ScoredAction
 from ..utils.dom import summarize_accessibility_tree
 from ..utils.logger import get_logger
-from ...drivers.utils.selector_normalizer import is_placeholder_text
+from ..utils.json_parser import extract_json_array
+from ..utils.combobox import is_combobox_field, build_combobox_hints_for_scoring
 from .common import client
 
 
 def _action_key_from_scored(action: ScoredAction) -> str:
     # Key prioritizes selector + type which best identifies a unique UI action
     return f"{action.action_type}|{action.selector}"
-
-
-def _extract_json_array(text: str) -> Optional[List[Any]]:
-    # Strip fences
-    if "```" in text:
-        parts = text.split("```")
-        if len(parts) >= 2:
-            candidate = parts[1]
-            if candidate.lstrip().startswith("json"):
-                candidate = candidate.lstrip()[4:]
-            text = candidate.strip()
-    # Direct
-    try:
-        obj = json.loads(text)
-        if isinstance(obj, list):
-            return obj
-    except Exception:
-        pass
-    # Regex fallback: find first bracketed array
-    try:
-        match = re.search(r"\[[\s\S]*\]", text)
-        if match:
-            obj = json.loads(match.group(0))
-            if isinstance(obj, list):
-                return obj
-    except Exception:
-        return None
-    return None
 
 
 def _detect_active_context(
@@ -231,193 +203,16 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
     if action_history:
         last_action = action_history[-1]
         if last_action.get('type') == 'type':
-            typed_text = last_action.get('text', '').strip().lower()
-            last_label = last_action.get('label', '').lower()
+            typed_text = last_action.get('text', '').strip()
+            last_label = last_action.get('label', '')
             
-            # Check if we typed into a combobox field (or email/recipient field that behaves like combobox)
-            is_combobox_field = (
-                'combobox' in last_label or
-                'type the name' in last_label or
-                'recipient' in last_label or
-                'to' in last_label or
-                'email' in last_label or  # Email fields often have dropdown options
-                'address' in last_label or  # Email addresses field
-                'invite' in last_label or  # Invite fields
-                any(elem.get('role') == 'combobox' and 
-                    (last_label in (elem.get('label') or '').lower() or 
-                     last_label in (elem.get('placeholder') or '').lower())
-                    for elem in interactables) or
-                # Also check if field has combobox-like behavior (shows dropdown after typing)
-                any(elem.get('role') in ['textbox', 'combobox'] and 
-                    last_label in (elem.get('label') or '').lower() and
-                    any(keyword in (elem.get('placeholder') or '').lower() for keyword in 
-                        ['email', 'recipient', 'to', 'invite', 'type', 'add', 'enter'])
-                    for elem in interactables)
-            )
-            
-            if typed_text and is_combobox_field:
-                # Temporal detection: Find elements that appeared AFTER typing
-                # Compare current elements with previous observation to find newly appeared elements
+            # Check if we typed into a combobox field
+            if typed_text and is_combobox_field(last_label, interactables):
                 prev_elements = state.get('prev_interactable_elements') or []
-                prev_selectors = {elem.get('selector', '') for elem in prev_elements}
-                
-                # Find newly appeared elements (these are the dropdown options)
-                newly_appeared = [
-                    elem for elem in interactables
-                    if elem.get('selector', '') not in prev_selectors
-                ]
-                
-                # Find ALL newly appeared dropdown options (not just matching typed text)
-                # Sometimes options appear that don't exactly match (e.g., "Invite: email")
-                all_newly_appeared_options = [
-                    elem for elem in interactables
-                    if elem.get('role') == 'option' and 
-                    elem.get('selector', '') not in prev_selectors
-                ]
-                
-                # Check for dropdown options matching typed text
-                matching_options = [
-                    elem for elem in interactables
-                    if elem.get('role') == 'option' and 
-                    (typed_text in (elem.get('label') or '').lower() or 
-                     (elem.get('label') or '').lower() in typed_text or
-                     # Also match if option contains typed email
-                     any(part in (elem.get('label') or '').lower() for part in typed_text.split('@') if '@' in typed_text and len(part) > 2))
-                ]
-                
-                # Identify which matching options are newly appeared vs existing
-                newly_appeared_options = [
-                    opt for opt in matching_options
-                    if opt.get('selector', '') not in prev_selectors
-                ]
-                
-                # If no matching options but we have newly appeared options, use those
-                # This handles cases where option is "Invite: email" instead of just "email"
-                if not newly_appeared_options and all_newly_appeared_options:
-                    # Use all newly appeared options, prioritize first one
-                    newly_appeared_options = all_newly_appeared_options
-                
-                existing_elements_with_label = [
-                    elem for elem in interactables
-                    if elem.get('selector', '') in prev_selectors and
-                    (typed_text in (elem.get('label') or '').lower() or 
-                     (elem.get('label') or '').lower() in typed_text)
-                ]
-                
-                # Check if submit/send button is disabled (indicates validation needed)
-                has_disabled_submit = any(
-                    (elem.get('role') == 'button' or elem.get('role') == 'link') and
-                    elem.get('disabled', False) and
-                    any(term in (elem.get('label') or '').lower() for term in 
-                        ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish', 'invite'])
-                    for elem in interactables
+                combobox_hints = build_combobox_hints_for_scoring(
+                    typed_text, interactables, prev_elements
                 )
-                
-                # Filter out placeholder text from options
-                # Placeholder text like "name@gmail.com" shouldn't be selected
-                options_to_use = newly_appeared_options if newly_appeared_options else (matching_options if matching_options else all_newly_appeared_options)
-                
-                # Filter out placeholder/example text options
-                if options_to_use:
-                    filtered_options = [
-                        opt for opt in options_to_use
-                        if not is_placeholder_text(opt.get('label', ''))
-                    ]
-                    # Only use filtered if we still have options, otherwise keep original
-                    if filtered_options:
-                        options_to_use = filtered_options
-                    
-                    # Also check for placeholder text in other interactables and warn about it
-                    placeholder_elements = [
-                        elem for elem in interactables
-                        if is_placeholder_text(elem.get('label', ''))
-                    ]
-                    if placeholder_elements:
-                        placeholder_labels = [elem.get('label', 'N/A') for elem in placeholder_elements[:2]]
-                        # Add warning to hints
-                        hints.append(
-                            f"⚠️ WARNING: Placeholder/example text detected ({', '.join(placeholder_labels)}) - these are NOT real options. "
-                            f"Score placeholder elements 0-1. Do NOT select placeholder text."
-                        )
-                
-                if options_to_use:
-                    # Temporal logic: Elements that appeared AFTER typing are dropdown options
-                    # Elements that existed BEFORE typing are background page elements
-                    
-                    # Sort options by order (preserve order from interactables list = DOM order)
-                    # This ensures first option is prioritized
-                    options_with_order = []
-                    for opt in options_to_use:
-                        try:
-                            idx = next(i for i, elem in enumerate(interactables) if elem.get('selector') == opt.get('selector'))
-                            options_with_order.append((idx, opt))
-                        except StopIteration:
-                            options_with_order.append((999, opt))  # If not found, put at end
-                    options_sorted = [opt for _, opt in sorted(options_with_order)]
-                    
-                    # First option is the primary/default selection
-                    first_option = options_sorted[0] if options_sorted else None
-                    first_option_label = first_option.get('label', 'N/A') if first_option else 'N/A'
-                    first_option_selector = first_option.get('selector', 'N/A') if first_option else 'N/A'
-                    other_options = options_sorted[1:3] if len(options_sorted) > 1 else []
-                    
-                    option_labels = [opt.get('label', 'N/A') for opt in options_sorted[:3]]
-                    option_selectors = [opt.get('selector', 'N/A') for opt in options_sorted[:3]]
-                    existing_labels = [elem.get('label', 'N/A') for elem in existing_elements_with_label[:3]] if existing_elements_with_label else []
-                    
-                    if has_disabled_submit:
-                        if first_option:
-                            hints.append(
-                                f"🔗 COMBOBOX VALIDATION REQUIRED: After typing '{typed_text}' into field, new dropdown options appeared: {', '.join(option_labels)}. "
-                                f"The FIRST option '{first_option_label}' (selector: {first_option_selector}) is the PRIMARY/DEFAULT selection - score it 9-10. "
-                                f"{f'Other options ({[opt.get("label") for opt in other_options]}) are alternatives - score them 7-8. ' if other_options else ''}"
-                                f"{f'Background elements with similar labels ({existing_labels}) existed before typing - these are page links, NOT dropdown options. ' if existing_labels else ''}"
-                                f"The Submit/Send/Invite button is DISABLED until you select one of the NEWLY APPEARED dropdown options. "
-                                f"Score the FIRST option '{first_option_label}' 9-10. Score other newly appeared options 7-8. "
-                                f"Score background elements that existed before typing 0-2."
-                            )
-                        else:
-                            hints.append(
-                                f"🔗 COMBOBOX VALIDATION REQUIRED: After typing '{typed_text}' into field, new dropdown options appeared: {', '.join(option_labels)}. "
-                                f"These options (selectors: {', '.join(option_selectors[:2])}) are NEWLY APPEARED and are the dropdown options to select. "
-                                f"{f'Background elements with similar labels ({existing_labels}) existed before typing - these are page links, NOT dropdown options. ' if existing_labels else ''}"
-                                f"The Submit/Send/Invite button is DISABLED until you select one of the NEWLY APPEARED dropdown options. "
-                                f"Score NEWLY APPEARED options (selectors: {', '.join(option_selectors[:2])}) 8-9. "
-                                f"Score background elements that existed before typing 0-2."
-                            )
-                    else:
-                        if first_option:
-                            hints.append(
-                                f"🔗 COMBOBOX SELECTION: After typing '{typed_text}' into field, new dropdown options appeared: {', '.join(option_labels)}. "
-                                f"The FIRST option '{first_option_label}' (selector: {first_option_selector}) is the PRIMARY/DEFAULT selection - score it 9-10. "
-                                f"{f'Other options ({[opt.get("label") for opt in other_options]}) are alternatives - score them 7-8. ' if other_options else ''}"
-                                f"{f'Background elements ({existing_labels}) with similar labels existed before - these are page links, NOT the dropdown. ' if existing_labels else ''}"
-                                f"Select the FIRST option '{first_option_label}' to validate the input. "
-                                f"Score the FIRST option 9-10. Score other newly appeared options 7-8. Score background elements that existed before typing 0-2."
-                            )
-                        else:
-                            hints.append(
-                                f"🔗 COMBOBOX SELECTION: After typing '{typed_text}' into field, new dropdown options appeared: {', '.join(option_labels)}. "
-                                f"These options (selectors: {', '.join(option_selectors[:2])}) are NEWLY APPEARED after your typing action. "
-                                f"{f'Background elements ({existing_labels}) with similar labels existed before - these are page links, NOT the dropdown. ' if existing_labels else ''}"
-                                f"Select one of the NEWLY APPEARED dropdown options to validate the input. "
-                                f"Score NEWLY APPEARED options 8-9. Score background elements that existed before typing 0-2."
-                            )
-                elif matching_options:
-                    # Fallback: We have matching options but couldn't determine which are new
-                    option_labels = [opt.get('label', 'N/A') for opt in matching_options[:3]]
-                    option_selectors = [opt.get('selector', 'N/A') for opt in matching_options[:3]]
-                    if has_disabled_submit:
-                        hints.append(
-                            f"🔗 COMBOBOX VALIDATION: Dropdown options matching '{typed_text}' appeared: {', '.join(option_labels)}. "
-                            f"Score dropdown options (role='option', selectors: {', '.join(option_selectors[:2])}) 8-9. "
-                            f"Penalize background elements (role='link'/'button') with similar labels."
-                        )
-                    else:
-                        hints.append(
-                            f"🔗 COMBOBOX SELECTION: Select dropdown option matching '{typed_text}' (selectors: {', '.join(option_selectors[:2])}) to validate input. "
-                            f"Score options (role='option') 8-9, penalize background links."
-                        )
+                hints.extend(combobox_hints)
     
     # Context: Goal completion indicators
     # Check if there are high-priority submission/confirmation buttons
@@ -556,7 +351,7 @@ Ensure each scored action has a valid selector, action_type, and clear reasoning
             'error': f"Scoring LLM call failed: {e}",
         }
 
-    scored_actions_raw = _extract_json_array(content) or []
+    scored_actions_raw = extract_json_array(content) or []
 
     parsed_actions: List[ScoredAction] = []
     for a in scored_actions_raw:

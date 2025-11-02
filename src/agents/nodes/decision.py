@@ -1,9 +1,10 @@
 from typing import Any, Dict, List, Optional
 import json
-import re
 
 from ..state import AgentState, ScoredAction
 from ..utils.logger import get_logger
+from ..utils.json_parser import extract_json_payload
+from ..utils.combobox import is_combobox_field, build_combobox_hints_for_decision
 from .common import client
 
 
@@ -20,33 +21,6 @@ def _serialize_candidates(base_list: List[ScoredAction], max_candidates: int) ->
         }
         for i, a in enumerate(base_list[:max_candidates])
     ]
-
-
-def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
-    # Remove code fences if present
-    if "```" in text:
-        parts = text.split("```")
-        # Prefer the first fenced block content
-        if len(parts) >= 2:
-            candidate = parts[1]
-            if candidate.lstrip().startswith("json"):
-                candidate = candidate.lstrip()[4:]
-            text = candidate.strip()
-
-    # Try direct JSON parse
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-
-    # Fallback: find the first top-level JSON object via regex
-    try:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return json.loads(match.group(0))
-    except Exception:
-        return None
-    return None
 
 
 def _choose_fallback(base_list: List[ScoredAction]) -> Optional[ScoredAction]:
@@ -86,161 +60,16 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
     if action_history:
         last_action = action_history[-1]
         if last_action.get('type') == 'type':
-            typed_text = last_action.get('text', '').strip().lower()
-            last_label = last_action.get('label', '').lower()
+            typed_text = last_action.get('text', '').strip()
+            last_label = last_action.get('label', '')
             
-            # Check if we typed into a combobox field (or email/recipient field that behaves like combobox)
-            is_combobox_field = (
-                'combobox' in last_label or
-                'type the name' in last_label or
-                'recipient' in last_label or
-                'to' in last_label or
-                'email' in last_label or  # Email fields often have dropdown options
-                'address' in last_label or  # Email addresses field
-                'invite' in last_label  # Invite fields
-            )
-            
-            if typed_text and is_combobox_field:
-                # Temporal detection: Find candidates that appeared AFTER typing
+            # Check if we typed into a combobox field
+            if typed_text and is_combobox_field(last_label, interactables):
                 prev_elements = state.get('prev_interactable_elements') or []
-                prev_selectors = {elem.get('selector', '') for elem in prev_elements}
-                
-                # Find ALL newly appeared option candidates (not just matching typed text)
-                all_newly_appeared_option_candidates = [
-                    c for c in candidates
-                    if c.get('action_type') == 'click' and
-                    'role=option' in c.get('selector', '') and
-                    c.get('selector', '') not in prev_selectors
-                ]
-                
-                # Check candidates for matching dropdown options
-                matching_candidates = [
-                    c for c in candidates
-                    if c.get('action_type') == 'click' and
-                    (typed_text in (c.get('label') or '').lower() or
-                     (c.get('label') or '').lower() in typed_text or
-                     # Also match if option contains typed email
-                     any(part in (c.get('label') or '').lower() for part in typed_text.split('@') if '@' in typed_text and len(part) > 2))
-                ]
-                
-                # Identify which candidates are newly appeared vs existing
-                newly_appeared_candidates = [
-                    c for c in matching_candidates
-                    if c.get('selector', '') not in prev_selectors
-                ]
-                
-                # If no matching candidates but we have newly appeared options, use those
-                if not newly_appeared_candidates and all_newly_appeared_option_candidates:
-                    newly_appeared_candidates = all_newly_appeared_option_candidates
-                
-                existing_candidates_with_label = [
-                    c for c in matching_candidates
-                    if c.get('selector', '') in prev_selectors
-                ]
-                
-                if matching_candidates:
-                    # Check if any candidate is a disabled submit/send button
-                    has_disabled_submit_candidate = False
-                    if scored_actions:
-                        for c in candidates:
-                            label_lower = c.get('label', '').lower()
-                            if label_lower in ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish']:
-                                # Check if this candidate has a low score (indicating disabled)
-                                for a in scored_actions[:10]:
-                                    if a.label.lower() == label_lower and a.score <= 2:
-                                        has_disabled_submit_candidate = True
-                                        break
-                                if has_disabled_submit_candidate:
-                                    break
-                    
-                    # Check for explicitly disabled actions
-                    has_disabled_submit_element = any(
-                        (elem.get('role') == 'button' or elem.get('role') == 'link') and
-                        elem.get('disabled', False) and
-                        any(term in (elem.get('label') or '').lower() for term in 
-                            ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish', 'invite'])
-                        for elem in interactables
-                    )
-                    
-                    # Temporal logic: Prioritize NEWLY APPEARED candidates over existing ones
-                    if newly_appeared_candidates:
-                        # Sort candidates by order to prioritize first option
-                        # Preserve order from candidates list (which reflects DOM order)
-                        candidates_with_order = []
-                        for cand in newly_appeared_candidates:
-                            try:
-                                idx = next(i for i, c in enumerate(candidates) if c.get('selector') == cand.get('selector'))
-                                candidates_with_order.append((idx, cand))
-                            except StopIteration:
-                                candidates_with_order.append((999, cand))
-                        sorted_newly_appeared = [cand for _, cand in sorted(candidates_with_order)]
-                        
-                        # First candidate is the primary/default selection
-                        first_candidate = sorted_newly_appeared[0] if sorted_newly_appeared else None
-                        first_label = first_candidate.get('label', 'N/A') if first_candidate else 'N/A'
-                        first_selector = first_candidate.get('selector', 'N/A') if first_candidate else 'N/A'
-                        other_candidates = sorted_newly_appeared[1:2] if len(sorted_newly_appeared) > 1 else []
-                        
-                        option_labels = [c.get('label', 'N/A') for c in sorted_newly_appeared[:3]]
-                        option_selectors = [c.get('selector', 'N/A') for c in sorted_newly_appeared[:3]]
-                        existing_labels = [c.get('label', 'N/A') for c in existing_candidates_with_label[:2]] if existing_candidates_with_label else []
-                        
-                        if has_disabled_submit_element or has_disabled_submit_candidate:
-                            if first_candidate:
-                                hints.append(
-                                    f"🔗 COMBOBOX VALIDATION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}). "
-                                    f"The FIRST option '{first_label}' (selector: {first_selector}) is the PRIMARY/DEFAULT selection - SELECT THIS ONE. "
-                                    f"{f'Other options ({[c.get("label") for c in other_candidates]}) are alternatives. ' if other_candidates else ''}"
-                                    f"{f'AVOID existing candidates ({existing_labels}) - these existed before typing and are background page elements, NOT dropdown options. ' if existing_labels else ''}"
-                                    f"Selecting the FIRST option '{first_label}' will validate and enable Send/Invite button. AVOID clicking disabled buttons."
-                                )
-                            else:
-                                hints.append(
-                                    f"🔗 COMBOBOX VALIDATION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}) - these are the ones to select. "
-                                    f"Select NEWLY APPEARED candidates (selectors: {', '.join(option_selectors[:2])}) to validate and enable Send button. "
-                                    f"{f'AVOID existing candidates ({existing_labels}) - these existed before typing and are background page elements, NOT dropdown options. ' if existing_labels else ''}"
-                                    f"AVOID clicking disabled Send button."
-                                )
-                        else:
-                            if first_candidate:
-                                hints.append(
-                                    f"🔗 COMBOBOX SELECTION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}). "
-                                    f"The FIRST option '{first_label}' (selector: {first_selector}) is the PRIMARY/DEFAULT selection - SELECT THIS ONE. "
-                                    f"{f'Other options ({[c.get("label") for c in other_candidates]}) are alternatives. ' if other_candidates else ''}"
-                                    f"{f'AVOID existing candidates ({existing_labels}) - these existed before typing and are background page elements, NOT dropdown options. ' if existing_labels else ''}"
-                                    f"Select the FIRST option '{first_label}' to validate the input."
-                                )
-                            else:
-                                hints.append(
-                                    f"🔗 COMBOBOX SELECTION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}). "
-                                    f"Select NEWLY APPEARED candidates (selectors: {', '.join(option_selectors[:2])}). "
-                                    f"{f'AVOID existing candidates ({existing_labels}) - these are background page elements, NOT the dropdown. ' if existing_labels else ''}"
-                                )
-                    elif matching_candidates:
-                        # Fallback: We have matching candidates but couldn't determine which are new
-                        option_labels = [c.get('label', 'N/A') for c in matching_candidates[:2]]
-                        option_selectors = [c.get('selector', 'N/A') for c in matching_candidates[:2]]
-                        if has_disabled_submit_element or has_disabled_submit_candidate:
-                            hints.append(
-                                f"🔗 COMBOBOX VALIDATION: Select matching dropdown option ({', '.join(option_labels)}) to enable Send button. "
-                                f"Prefer candidates with role='option' (selectors: {', '.join(option_selectors[:2])}). "
-                                f"AVOID clicking disabled Send button."
-                            )
-                        else:
-                            option_candidates = [c for c in matching_candidates if 'role=option' in (c.get('selector', ''))]
-                            if option_candidates:
-                                hints.append(
-                                    f"🔗 COMBOBOX SELECTION: Prefer candidates with role='option' (selectors: {', '.join([c.get('selector', 'N/A') for c in option_candidates[:2]])}). "
-                                    f"AVOID candidates with role='link' - these are background elements."
-                                )
-                    else:
-                        # No disabled submit - might be redundant
-                        option_labels = [c.get('label') for c in matching_candidates[:2]]
-                        hints.append(
-                            f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox. "
-                            f"Candidate dropdown options matching this text ({', '.join(option_labels)}) are likely redundant. "
-                            f"AVOID selecting these; prefer moving to next field, submitting, or other productive actions."
-                        )
+                combobox_hints = build_combobox_hints_for_decision(
+                    typed_text, candidates, interactables, prev_elements, scored_actions
+                )
+                hints.extend(combobox_hints)
     
     # Context: Disabled action avoidance
     disabled_submit_buttons = [
@@ -397,7 +226,7 @@ Return ONLY valid JSON:
         fallback = _choose_fallback(base_list)
         return { 'next_action': fallback }
 
-    decision = _extract_json_payload(content) or {}
+    decision = extract_json_payload(content) or {}
     try:
         idx = int(decision.get('i', 0))
     except Exception:

@@ -1,30 +1,9 @@
 from typing import Any, Dict, Optional, List
 import json
-import re
 
 from ..state import AgentState
+from ..utils.json_parser import extract_json_payload
 from .common import client
-
-
-def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
-    if "```" in text:
-        parts = text.split("```")
-        if len(parts) >= 2:
-            candidate = parts[1]
-            if candidate.lstrip().startswith("json"):
-                candidate = candidate.lstrip()[4:]
-            text = candidate.strip()
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    try:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return json.loads(match.group(0))
-    except Exception:
-        return None
-    return None
 
 
 def _build_dynamic_evaluation_context(state: AgentState, last_action: Optional[Dict[str, Any]]) -> str:
@@ -180,7 +159,7 @@ Return ONLY valid JSON:
         print(f"  Evaluation LLM call failed: {e}")
         return {'goal_reached': False}
 
-    result = _extract_json_payload(content) or {}
+    result = extract_json_payload(content) or {}
     goal_reached = bool(result.get('goal_reached', False))
     reasoning = (result.get('reasoning') or 'Unknown').strip()
     try:
