@@ -4,6 +4,7 @@ import re
 
 from ..state import AgentState, ScoredAction
 from ..utils.dom import summarize_accessibility_tree
+from ..utils.logger import get_logger
 from .common import client
 
 
@@ -245,10 +246,33 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
             )
             
             if typed_text and is_combobox_field:
+                # Temporal detection: Find elements that appeared AFTER typing
+                # Compare current elements with previous observation to find newly appeared elements
+                prev_elements = state.get('prev_interactable_elements') or []
+                prev_selectors = {elem.get('selector', '') for elem in prev_elements}
+                
+                # Find newly appeared elements (these are the dropdown options)
+                newly_appeared = [
+                    elem for elem in interactables
+                    if elem.get('selector', '') not in prev_selectors
+                ]
+                
                 # Check for dropdown options matching typed text
                 matching_options = [
                     elem for elem in interactables
                     if elem.get('role') == 'option' and 
+                    (typed_text in (elem.get('label') or '').lower() or 
+                     (elem.get('label') or '').lower() in typed_text)
+                ]
+                
+                # Identify which matching options are newly appeared vs existing
+                newly_appeared_options = [
+                    opt for opt in matching_options
+                    if opt.get('selector', '') not in prev_selectors
+                ]
+                existing_elements_with_label = [
+                    elem for elem in interactables
+                    if elem.get('selector', '') in prev_selectors and
                     (typed_text in (elem.get('label') or '').lower() or 
                      (elem.get('label') or '').lower() in typed_text)
                 ]
@@ -263,23 +287,46 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
                         for elem in interactables
                     )
                     
-                    if has_disabled_submit:
-                        # This is a validation workflow - selecting dropdown option enables submit
+                    # Temporal logic: Elements that appeared AFTER typing are dropdown options
+                    # Elements that existed BEFORE typing are background page elements
+                    if newly_appeared_options:
+                        # We have newly appeared dropdown options - these are the ones to use
+                        option_labels = [opt.get('label', 'N/A') for opt in newly_appeared_options[:3]]
+                        option_selectors = [opt.get('selector', 'N/A') for opt in newly_appeared_options[:3]]
+                        existing_labels = [elem.get('label', 'N/A') for elem in existing_elements_with_label[:3]] if existing_elements_with_label else []
+                        
+                        if has_disabled_submit:
+                            hints.append(
+                                f"🔗 COMBOBOX VALIDATION REQUIRED: After typing '{typed_text}' into combobox, new dropdown options appeared: {', '.join(option_labels)}. "
+                                f"These options (selectors: {', '.join(option_selectors[:2])}) are NEWLY APPEARED and are the dropdown options to select. "
+                                f"{f'Background elements with similar labels ({existing_labels}) existed before typing - these are page links, NOT dropdown options. ' if existing_labels else ''}"
+                                f"The Submit/Send button is DISABLED until you select one of the NEWLY APPEARED dropdown options. "
+                                f"Score NEWLY APPEARED options (selectors: {', '.join(option_selectors[:2])}) 8-9. "
+                                f"Score background elements that existed before typing 0-2."
+                            )
+                        else:
+                            hints.append(
+                                f"🔗 COMBOBOX SELECTION: After typing '{typed_text}' into combobox, new dropdown options appeared: {', '.join(option_labels)}. "
+                                f"These options (selectors: {', '.join(option_selectors[:2])}) are NEWLY APPEARED after your typing action. "
+                                f"{f'Background elements ({existing_labels}) with similar labels existed before - these are page links, NOT the dropdown. ' if existing_labels else ''}"
+                                f"Select one of the NEWLY APPEARED dropdown options to validate the input. "
+                                f"Score NEWLY APPEARED options 8-9. Score background elements that existed before typing 0-2."
+                            )
+                    elif matching_options:
+                        # Fallback: We have options but couldn't determine which are new
                         option_labels = [opt.get('label', 'N/A') for opt in matching_options[:3]]
-                        hints.append(
-                            f"🔗 COMBOBOX VALIDATION REQUIRED: You just typed '{typed_text}' into a combobox field. "
-                            f"Dropdown options appeared: {', '.join(option_labels)}. "
-                            f"The Submit/Send button is DISABLED until you select a matching option. "
-                            f"This is a REQUIRED validation step. Score matching dropdown options 8-9 (high priority). "
-                            f"After selecting the option, the Submit button will be enabled."
-                        )
-                    else:
-                        # No disabled submit button - options might be redundant
-                        hints.append(
-                            f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox field. "
-                            f"Dropdown options matching this text are likely redundant - the field already contains this value. "
-                            f"Score such options 0-3; prefer moving to next field or submitting instead."
-                        )
+                        option_selectors = [opt.get('selector', 'N/A') for opt in matching_options[:3]]
+                        if has_disabled_submit:
+                            hints.append(
+                                f"🔗 COMBOBOX VALIDATION: Dropdown options matching '{typed_text}' appeared: {', '.join(option_labels)}. "
+                                f"Score dropdown options (role='option', selectors: {', '.join(option_selectors[:2])}) 8-9. "
+                                f"Penalize background elements (role='link'/'button') with similar labels."
+                            )
+                        else:
+                            hints.append(
+                                f"🔗 COMBOBOX SELECTION: Select dropdown option matching '{typed_text}' (selectors: {', '.join(option_selectors[:2])}) to validate input. "
+                                f"Score options (role='option') 8-9, penalize background links."
+                            )
     
     # Context: Goal completion indicators
     # Check if there are high-priority submission/confirmation buttons
@@ -299,8 +346,14 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
 
 def score_actions_node(state: AgentState) -> Dict[str, Any]:
     """Use LLM to score which actions are most likely to advance the goal (app-agnostic)."""
+    logger = get_logger()
     goal = state.get('goal', '')
+    step = state.get('step_count', 0)
     print(f"\n[SCORE] Analyzing actions for goal: {goal}")
+
+    if logger:
+        logger.log_section(f"SCORE - Step {step}")
+        logger.log(f"Goal: {goal}")
 
     # Configurable parameters
     model_name = state.get('llm_model') or "gpt-4o"
@@ -311,6 +364,9 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     interactables_full = state.get('interactable_elements') or []
     interactables = interactables_full[:max_elements]
 
+    if logger:
+        logger.log(f"Analyzing {len(interactables)} interactable elements (from {len(interactables_full)} total)")
+
     # Build action history summary
     history_summary = []
     action_history = state.get('action_history') or []
@@ -318,8 +374,15 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         text_part = f" with text '{action.get('text')}'" if action.get('type') == 'type' and action.get('text') else ""
         history_summary.append(f"{i+1}. {action.get('type', '')} on '{action.get('label', 'N/A')}'{text_part}")
 
+    if logger:
+        logger.log_list("Recent actions (last 5)", history_summary)
+
     # Build dynamic context hints (Option 6)
     dynamic_hints = _build_dynamic_context_hints(state, interactables)
+    
+    if logger and dynamic_hints:
+        logger.log("Dynamic Context Hints:", "HINT")
+        logger.log(dynamic_hints, "HINT")
 
     # Build structured prompt with clear sections (Option 2)
     prompt = f"""# ROLE & OBJECTIVE
@@ -453,6 +516,19 @@ Ensure each scored action has a valid selector, action_type, and clear reasoning
             for a in same_group:
                 suffix = f" → type text='{a.text}'" if (a.action_type == 'type' and a.text) else ""
                 print(f"    - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix}")
+    
+    if logger:
+        logger.log(f"Scored {len(adjusted)} actions (deduped)")
+        top_actions = adjusted[:5]
+        for i, action in enumerate(top_actions, 1):
+            logger.log(f"{i}. [{action.score:.1f}] {action.action_type} '{action.label}' - selector: {action.selector}", "SCORE")
+            if action.action_type == 'type' and action.text:
+                logger.log(f"   Text to type: '{action.text}'", "SCORE")
+        if same_group and len(same_group) > 1:
+            logger.log("Same-score group (±1.0 from top):", "SCORE")
+            for a in same_group[:5]:
+                suffix = f" → type text='{a.text}'" if (a.action_type == 'type' and a.text) else ""
+                logger.log(f"  - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix} - selector: {a.selector}", "SCORE")
 
     return {
         'scored_actions': adjusted,

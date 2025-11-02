@@ -115,7 +115,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
         a11y = _page.accessibility.snapshot(interesting_only=True)
         interactables = to_interactables(a11y or {})
         try:
-            extra_items = _page.evaluate(
+            extra_items_result = _page.evaluate(
                 """
                 () => {
                   function visible(el) {
@@ -163,10 +163,25 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                     } catch (e) {}
                   }
                   const candidates = new Set();
+                  const containerInfo = [];
                   // 1) From open containers: menu/option/button/link
                   for (const root of containers) {
                     if (!visible(root)) continue;
+                    const containerRole = root.getAttribute('role') || root.tagName.toLowerCase();
+                    const containerId = root.id || '';
+                    const containerClasses = Array.from(root.classList || []).slice(0, 3).join('.');
                     const els = root.querySelectorAll('[role="menuitem"], [role="option"], button, a');
+                    const optionCount = Array.from(els).filter(el => {
+                      const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
+                      return role === 'option';
+                    }).length;
+                    containerInfo.push({
+                      role: containerRole,
+                      id: containerId,
+                      classes: containerClasses,
+                      totalElements: els.length,
+                      optionCount: optionCount
+                    });
                     els.forEach(el => {
                       if (!visible(el)) return;
                       const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
@@ -222,13 +237,39 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       });
                     } catch(e) {}
                   }
-                  return results;
+                  return { items: results, containerInfo: containerInfo };
                 }
                 """
             )
         except Exception:
-            extra_items = []
+            extra_items_result = {'items': [], 'containerInfo': []}
+        
+        # Extract items and container info
+        if isinstance(extra_items_result, dict):
+            extra_items = extra_items_result.get('items', [])
+            container_info = extra_items_result.get('containerInfo', [])
+        else:
+            # Fallback for old format
+            extra_items = extra_items_result if extra_items_result else []
+            container_info = []
+        
+        # DEBUG: Log container info
+        if DEBUG and container_info:
+            print(f"[DRIVER DEBUG] Found {len(container_info)} container(s):")
+            for ci in container_info:
+                print(f"  - role={ci.get('role')}, id='{ci.get('id')}', classes='{ci.get('classes')}', totalElements={ci.get('totalElements')}, optionCount={ci.get('optionCount')}")
+        
+        # DEBUG: Log all role=option elements from a11y tree
+        a11y_options = [item for item in interactables if item.get('role') == 'option']
+        if DEBUG and a11y_options:
+            print(f"[DRIVER DEBUG] a11y tree found {len(a11y_options)} option(s):")
+            for opt in a11y_options:
+                print(f"  - role={opt['role']}, label='{opt['label']}', selector='{opt['selector']}'")
+        
         seen = {(item['role'], item['label']) for item in interactables}
+        skipped_options = []
+        added_options = []
+        
         for it in extra_items or []:
             role = it.get('role')
             name = it.get('name') or ''
@@ -250,8 +291,14 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
             key = (role, label_out)
             if key in seen:
+                if role == 'option':
+                    skipped_options.append({'role': role, 'name': name, 'normalized': label_out, 'reason': 'already in seen'})
                 continue
             seen.add(key)
+            
+            if role == 'option':
+                added_options.append({'role': role, 'name': name, 'normalized': label_out, 'selector': f'role={role}[name="{label_out}"]'})
+            
             interactables.append({
                 'role': role, 
                 'label': label_out, 
@@ -264,6 +311,29 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 'type': elem_type,
                 'placeholder': placeholder
             })
+        
+        # DEBUG: Log all role=option elements from extra_items scan
+        if DEBUG:
+            if extra_items:
+                extra_options_raw = [it for it in extra_items if it.get('role') == 'option']
+                print(f"[DRIVER DEBUG] extra_items scan found {len(extra_options_raw)} option(s) (before normalization):")
+                for opt in extra_options_raw:
+                    print(f"  - role={opt.get('role')}, name='{opt.get('name')}'")
+            if added_options:
+                print(f"[DRIVER DEBUG] Added {len(added_options)} option(s) from extra_items:")
+                for opt in added_options:
+                    print(f"  - {opt['selector']} (original name: '{opt['name']}', normalized: '{opt['normalized']}')")
+            if skipped_options:
+                print(f"[DRIVER DEBUG] Skipped {len(skipped_options)} option(s) (deduplication):")
+                for opt in skipped_options:
+                    print(f"  - role={opt['role']}, name='{opt['name']}', normalized='{opt['normalized']}', reason: {opt['reason']}")
+        
+        # DEBUG: Log final list of all role=option elements
+        final_options = [item for item in interactables if item.get('role') == 'option']
+        if DEBUG and final_options:
+            print(f"[DRIVER DEBUG] Final list: {len(final_options)} option(s) total:")
+            for opt in final_options:
+                print(f"  - {opt['selector']}")
 
         # errors
         error_messages = _page.evaluate(
@@ -507,8 +577,14 @@ Respond with ONLY a number (the idx or -1)."""
                             role_type = m.group(1) if m else ''
                             desired_label = m.group(2) if m else ''
                             
+                            if DEBUG:
+                                from .utils.selector_normalizer import normalize_label
+                                normalized = normalize_label(desired_label)
+                                print(f"[DRIVER DEBUG] Extracted from selector: role={role_type}, label='{desired_label}' (will normalize to '{normalized}' and try both)")
+                            
                             if role_type and desired_label:
                                 # Use utility function to handle all the complex ARIA selector logic
+                                # click_aria_element will try both normalized and original label
                                 if click_aria_element(ctx, role_type, desired_label, _page, debug=DEBUG):
                                     return driver_pb2.ActResponse(ok=True)
                             

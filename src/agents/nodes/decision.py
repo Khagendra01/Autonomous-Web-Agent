@@ -3,6 +3,7 @@ import json
 import re
 
 from ..state import AgentState, ScoredAction
+from ..utils.logger import get_logger
 from .common import client
 
 
@@ -97,6 +98,10 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
             )
             
             if typed_text and is_combobox_field:
+                # Temporal detection: Find candidates that appeared AFTER typing
+                prev_elements = state.get('prev_interactable_elements') or []
+                prev_selectors = {elem.get('selector', '') for elem in prev_elements}
+                
                 # Check candidates for matching dropdown options
                 matching_candidates = [
                     c for c in candidates
@@ -105,19 +110,30 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
                      (c.get('label') or '').lower() in typed_text)
                 ]
                 
+                # Identify which candidates are newly appeared vs existing
+                newly_appeared_candidates = [
+                    c for c in matching_candidates
+                    if c.get('selector', '') not in prev_selectors
+                ]
+                existing_candidates_with_label = [
+                    c for c in matching_candidates
+                    if c.get('selector', '') in prev_selectors
+                ]
+                
                 if matching_candidates:
                     # Check if any candidate is a disabled submit/send button
-                    has_disabled_submit_candidate = any(
-                        c.get('label', '').lower() in ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish']
-                        and any(
-                            # Try to detect if this would be disabled - we don't have direct access to disabled state
-                            # but we can infer from low scores (disabled buttons often scored 0-2)
-                            (scored_actions and 
-                             any(a.label.lower() == c.get('label', '').lower() and a.score <= 2
-                                 for a in scored_actions[:10]))
-                        )
-                        for c in candidates
-                    )
+                    has_disabled_submit_candidate = False
+                    if scored_actions:
+                        for c in candidates:
+                            label_lower = c.get('label', '').lower()
+                            if label_lower in ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish']:
+                                # Check if this candidate has a low score (indicating disabled)
+                                for a in scored_actions[:10]:
+                                    if a.label.lower() == label_lower and a.score <= 2:
+                                        has_disabled_submit_candidate = True
+                                        break
+                                if has_disabled_submit_candidate:
+                                    break
                     
                     # Check for explicitly disabled actions
                     has_disabled_submit_element = any(
@@ -128,14 +144,42 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
                         for elem in interactables
                     )
                     
-                    if has_disabled_submit_element or has_disabled_submit_candidate:
-                        # This is validation workflow - prioritize selecting dropdown option
+                    # Temporal logic: Prioritize NEWLY APPEARED candidates over existing ones
+                    if newly_appeared_candidates:
+                        option_labels = [c.get('label', 'N/A') for c in newly_appeared_candidates[:2]]
+                        option_selectors = [c.get('selector', 'N/A') for c in newly_appeared_candidates[:2]]
+                        existing_labels = [c.get('label', 'N/A') for c in existing_candidates_with_label[:2]] if existing_candidates_with_label else []
+                        
+                        if has_disabled_submit_element or has_disabled_submit_candidate:
+                            hints.append(
+                                f"🔗 COMBOBOX VALIDATION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}) - these are the ones to select. "
+                                f"Select NEWLY APPEARED candidates (selectors: {', '.join(option_selectors[:2])}) to validate and enable Send button. "
+                                f"{f'AVOID existing candidates ({existing_labels}) - these existed before typing and are background page elements, NOT dropdown options. ' if existing_labels else ''}"
+                                f"AVOID clicking disabled Send button."
+                            )
+                        else:
+                            hints.append(
+                                f"🔗 COMBOBOX SELECTION: After typing, NEW dropdown options appeared ({', '.join(option_labels)}). "
+                                f"Select NEWLY APPEARED candidates (selectors: {', '.join(option_selectors[:2])}). "
+                                f"{f'AVOID existing candidates ({existing_labels}) - these are background page elements, NOT the dropdown. ' if existing_labels else ''}"
+                            )
+                    elif matching_candidates:
+                        # Fallback: We have matching candidates but couldn't determine which are new
                         option_labels = [c.get('label', 'N/A') for c in matching_candidates[:2]]
-                        hints.append(
-                            f"🔗 COMBOBOX VALIDATION: Select matching dropdown option ({', '.join(option_labels)}) "
-                            f"to validate input and enable Send button. This is REQUIRED before Send will work. "
-                            f"AVOID clicking disabled Send button."
-                        )
+                        option_selectors = [c.get('selector', 'N/A') for c in matching_candidates[:2]]
+                        if has_disabled_submit_element or has_disabled_submit_candidate:
+                            hints.append(
+                                f"🔗 COMBOBOX VALIDATION: Select matching dropdown option ({', '.join(option_labels)}) to enable Send button. "
+                                f"Prefer candidates with role='option' (selectors: {', '.join(option_selectors[:2])}). "
+                                f"AVOID clicking disabled Send button."
+                            )
+                        else:
+                            option_candidates = [c for c in matching_candidates if 'role=option' in (c.get('selector', ''))]
+                            if option_candidates:
+                                hints.append(
+                                    f"🔗 COMBOBOX SELECTION: Prefer candidates with role='option' (selectors: {', '.join([c.get('selector', 'N/A') for c in option_candidates[:2]])}). "
+                                    f"AVOID candidates with role='link' - these are background elements."
+                                )
                     else:
                         # No disabled submit - might be redundant
                         option_labels = [c.get('label') for c in matching_candidates[:2]]
@@ -180,10 +224,17 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
 
     App-agnostic policy; avoids app-specific heuristics and examples.
     """
+    logger = get_logger()
+    step = state.get('step_count', 0)
     print(f"\n[DECIDE] Selecting next action with autonomous policy")
+
+    if logger:
+        logger.log_section(f"DECIDE - Step {step}")
 
     scored = state.get('scored_actions') or []
     if not scored:
+        if logger:
+            logger.log("No scored actions available", "WARNING")
         return { 'next_action': state.get('next_action') }
 
     # Configurable parameters with safe defaults
@@ -324,6 +375,18 @@ Return ONLY valid JSON:
         print(f"  Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
         if rationale:
             print(f"  Rationale: {rationale}")
+        
+        if logger:
+            logger.log_dict("Chosen Action", {
+                'action_type': chosen.action_type,
+                'label': chosen.label,
+                'selector': chosen.selector,
+                'score': chosen.score,
+                'reasoning': chosen.reasoning,
+                'text': chosen.text if chosen.action_type == 'type' else None,
+                'rationale': rationale
+            })
+        
         return { 'next_action': chosen }
 
     print(f"  Invalid index {idx}; using fallback")

@@ -47,4 +47,7 @@ class AgentState(TypedDict):
     # Anti-loop memory
     # Map of URL -> list of action keys that were already tried on that view
     tried_actions_by_url: Dict[str, List[str]]
+    
+    # Temporal tracking for element detection
+    prev_interactable_elements: Optional[List[Dict[str, Any]]]  # Elements from previous observation
 

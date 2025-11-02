@@ -3,14 +3,18 @@ import requests
 
 from ..state import AgentState, ScoredAction
 from .common import driver_client
+from ..utils.logger import get_logger
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
     """Execute the highest-scored action."""
+    logger = get_logger()
     action = state['next_action']
     
     if not action:
         print(f"\n[EXECUTE] No action to execute")
+        if logger:
+            logger.log("EXECUTE: No action to execute", "WARNING")
         return {'error': 'No valid action found'}
     
     print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
@@ -24,6 +28,20 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     
     if action.action_type == 'type' and action.text:
         payload['text'] = action.text
+    
+    # Log execution details
+    if logger:
+        logger.log_section(f"EXECUTE - Step {state.get('step_count', 0)}")
+        logger.log_dict("Action Details", {
+            'action_type': action.action_type,
+            'label': action.label,
+            'selector': action.selector,
+            'score': action.score,
+            'reasoning': action.reasoning,
+            'text': action.text if action.action_type == 'type' else None
+        })
+        logger.log_dict("Payload", payload)
+        logger.log(f"Current URL: {state.get('current_url', 'N/A')}")
     
     # Capture a focused screenshot around the target (with padding) before executing
     try:
@@ -47,20 +65,35 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     
     # Execute via driver
     try:
+        if logger:
+            logger.log(f"Calling driver_client.act() with payload: {payload}", "DEBUG")
+        
         result = driver_client.act(
             type=payload['type'],
             selector=payload.get('selector'),
             text=payload.get('text')
         )
         
+        if logger:
+            logger.log_dict("Driver Response", {
+                'ok': result.ok,
+                'error': result.error if hasattr(result, 'error') else None
+            })
+        
         if not result.ok:
-            print(f"  ❌ Action failed: {result.error}")
+            error_msg = result.error if hasattr(result, 'error') else 'Unknown error'
+            print(f"  ❌ Action failed: {error_msg}")
+            if logger:
+                logger.log(f"Action FAILED: {error_msg}", "ERROR")
+                logger.log(f"Failed selector: {payload.get('selector')}", "ERROR")
             return {
-                'error': result.error,
+                'error': error_msg,
                 'stuck_count': state['stuck_count'] + 1
             }
         
         print(f"  ✓ Action executed successfully")
+        if logger:
+            logger.log("Action executed successfully", "SUCCESS")
 
         # Post-action verification for typing: ensure text became visible; retry once if not
         if action.action_type == 'type' and action.text:
@@ -116,6 +149,11 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         
     except Exception as e:
         print(f"  ❌ Exception during action: {e}")
+        import traceback
+        if logger:
+            logger.log(f"Exception during action execution: {str(e)}", "ERROR")
+            logger.log(f"Exception traceback:\n{traceback.format_exc()}", "ERROR")
+            logger.log(f"Failed selector: {payload.get('selector')}", "ERROR")
         return {
             'error': str(e),
             'stuck_count': state['stuck_count'] + 1
