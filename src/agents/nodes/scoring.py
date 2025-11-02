@@ -225,21 +225,61 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
     if step_count < 3:
         hints.append("🔍 EARLY STAGE: Task just started. Include exploration actions (scroll, open menus) to discover available options. Score exploration actions 4-6 even if not directly goal-related.")
     
-    # Context: Combobox redundancy detection
+    # Context: Combobox validation workflow detection
     if action_history:
         last_action = action_history[-1]
         if last_action.get('type') == 'type':
             typed_text = last_action.get('text', '').strip().lower()
-            if typed_text:
+            last_label = last_action.get('label', '').lower()
+            
+            # Check if we typed into a combobox field
+            is_combobox_field = (
+                'combobox' in last_label or
+                'type the name' in last_label or
+                'recipient' in last_label or
+                'to' in last_label or
+                any(elem.get('role') == 'combobox' and 
+                    (last_label in (elem.get('label') or '').lower() or 
+                     last_label in (elem.get('placeholder') or '').lower())
+                    for elem in interactables)
+            )
+            
+            if typed_text and is_combobox_field:
                 # Check for dropdown options matching typed text
-                has_matching_options = any(
-                    elem.get('role') == 'option' and 
+                matching_options = [
+                    elem for elem in interactables
+                    if elem.get('role') == 'option' and 
                     (typed_text in (elem.get('label') or '').lower() or 
                      (elem.get('label') or '').lower() in typed_text)
-                    for elem in interactables
-                )
-                if has_matching_options:
-                    hints.append(f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox field. Dropdown options matching this text are likely redundant - the field already contains this value. Score such options 0-3; prefer moving to next field or submitting instead.")
+                ]
+                
+                if matching_options:
+                    # Check if submit/send button is disabled (indicates validation needed)
+                    has_disabled_submit = any(
+                        (elem.get('role') == 'button' or elem.get('role') == 'link') and
+                        elem.get('disabled', False) and
+                        any(term in (elem.get('label') or '').lower() for term in 
+                            ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish'])
+                        for elem in interactables
+                    )
+                    
+                    if has_disabled_submit:
+                        # This is a validation workflow - selecting dropdown option enables submit
+                        option_labels = [opt.get('label', 'N/A') for opt in matching_options[:3]]
+                        hints.append(
+                            f"🔗 COMBOBOX VALIDATION REQUIRED: You just typed '{typed_text}' into a combobox field. "
+                            f"Dropdown options appeared: {', '.join(option_labels)}. "
+                            f"The Submit/Send button is DISABLED until you select a matching option. "
+                            f"This is a REQUIRED validation step. Score matching dropdown options 8-9 (high priority). "
+                            f"After selecting the option, the Submit button will be enabled."
+                        )
+                    else:
+                        # No disabled submit button - options might be redundant
+                        hints.append(
+                            f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox field. "
+                            f"Dropdown options matching this text are likely redundant - the field already contains this value. "
+                            f"Score such options 0-3; prefer moving to next field or submitting instead."
+                        )
     
     # Context: Goal completion indicators
     # Check if there are high-priority submission/confirmation buttons
@@ -316,6 +356,7 @@ Recent Actions (last 5):
 - Disabled elements (disabled=true) are not actionable → score 0-2
 - Prefer enabling steps before attempting disabled actions
 - If validation errors exist, prioritize actions that resolve them (see Dynamic Context Hints above)
+- If Submit/Send button is disabled, look for the enabling action (e.g., selecting dropdown option after typing in combobox) rather than clicking disabled button
 
 ## Efficiency & Exploration (IMPORTANT)
 - If no strong candidates exist, include low-risk exploration (scroll, open menu) to reveal options

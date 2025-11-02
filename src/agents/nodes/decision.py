@@ -65,6 +65,7 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
     errors = state.get('errors') or []
     step_count = state.get('step_count', 0)
     scored_actions = state.get('scored_actions') or []
+    interactables = state.get('interactable_elements', [])
     
     # Context: Error resolution priority
     if errors:
@@ -80,21 +81,84 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
         if has_error_fixers:
             hints.append(f"⚠️ CRITICAL: Validation errors detected: {error_summary}. Prioritize error-resolving actions (high-scored candidates). Avoid actions blocked by validation errors.")
     
-    # Context: Redundancy detection (combobox)
+    # Context: Combobox validation workflow (decision-specific)
     if action_history:
         last_action = action_history[-1]
         if last_action.get('type') == 'type':
             typed_text = last_action.get('text', '').strip().lower()
-            if typed_text:
+            last_label = last_action.get('label', '').lower()
+            
+            # Check if we typed into a combobox field
+            is_combobox_field = (
+                'combobox' in last_label or
+                'type the name' in last_label or
+                'recipient' in last_label or
+                'to' in last_label
+            )
+            
+            if typed_text and is_combobox_field:
                 # Check candidates for matching dropdown options
                 matching_candidates = [
-                    c.get('label') for c in candidates
+                    c for c in candidates
                     if c.get('action_type') == 'click' and
                     (typed_text in (c.get('label') or '').lower() or
                      (c.get('label') or '').lower() in typed_text)
                 ]
+                
                 if matching_candidates:
-                    hints.append(f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox. Candidate dropdown options matching this text ({', '.join(matching_candidates[:2])}) are likely redundant - the field already contains this value. AVOID selecting these; prefer moving to next field, submitting, or other productive actions.")
+                    # Check if any candidate is a disabled submit/send button
+                    has_disabled_submit_candidate = any(
+                        c.get('label', '').lower() in ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish']
+                        and any(
+                            # Try to detect if this would be disabled - we don't have direct access to disabled state
+                            # but we can infer from low scores (disabled buttons often scored 0-2)
+                            (scored_actions and 
+                             any(a.label.lower() == c.get('label', '').lower() and a.score <= 2
+                                 for a in scored_actions[:10]))
+                        )
+                        for c in candidates
+                    )
+                    
+                    # Check for explicitly disabled actions
+                    has_disabled_submit_element = any(
+                        (elem.get('role') == 'button' or elem.get('role') == 'link') and
+                        elem.get('disabled', False) and
+                        any(term in (elem.get('label') or '').lower() for term in 
+                            ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish'])
+                        for elem in interactables
+                    )
+                    
+                    if has_disabled_submit_element or has_disabled_submit_candidate:
+                        # This is validation workflow - prioritize selecting dropdown option
+                        option_labels = [c.get('label', 'N/A') for c in matching_candidates[:2]]
+                        hints.append(
+                            f"🔗 COMBOBOX VALIDATION: Select matching dropdown option ({', '.join(option_labels)}) "
+                            f"to validate input and enable Send button. This is REQUIRED before Send will work. "
+                            f"AVOID clicking disabled Send button."
+                        )
+                    else:
+                        # No disabled submit - might be redundant
+                        option_labels = [c.get('label') for c in matching_candidates[:2]]
+                        hints.append(
+                            f"⚠️ REDUNDANCY WARNING: Recently typed '{typed_text}' into combobox. "
+                            f"Candidate dropdown options matching this text ({', '.join(option_labels)}) are likely redundant. "
+                            f"AVOID selecting these; prefer moving to next field, submitting, or other productive actions."
+                        )
+    
+    # Context: Disabled action avoidance
+    disabled_submit_buttons = [
+        elem.get('label', '') for elem in interactables
+        if (elem.get('role') == 'button' or elem.get('role') == 'link') and
+        elem.get('disabled', False) and
+        any(term in (elem.get('label') or '').lower() for term in 
+            ['send', 'submit', 'save', 'create', 'post', 'confirm', 'done', 'finish'])
+    ]
+    if disabled_submit_buttons and any(c.get('score', 0) > 2 for c in candidates):
+        hints.append(
+            f"⚠️ DISABLED SUBMIT BUTTON: Submit/Send button ({', '.join(disabled_submit_buttons)}) is disabled. "
+            f"DO NOT select disabled actions. Look for the enabling action (e.g., selecting dropdown option, "
+            f"filling required fields) that will enable the submit button. Choose a non-disabled action with a score > 2."
+        )
     
     # Context: Goal completion readiness
     if scored_actions:
@@ -183,6 +247,12 @@ Select one candidate by its index 'i':
 - If validation or error signals exist, prioritize resolving them (see Dynamic Context Hints)
 - Avoid actions blocked by validation errors
 - Error resolution typically takes precedence over goal progression
+
+## Disabled Actions (CRITICAL)
+- NEVER select disabled Submit/Send buttons - they cannot be clicked
+- If submit button is disabled, find the enabling action (e.g., selecting dropdown option, filling required field)
+- Look for validation steps that enable the submit button (see Dynamic Context Hints for combobox validation workflow)
+- Only select disabled actions if they are the ONLY available option and there's no enabling action
 
 ## Efficiency & Avoidance (IMPORTANT)
 - Avoid repeating ineffective recent actions
