@@ -15,6 +15,7 @@ if _THIS_DIR not in sys.path:
     sys.path.insert(0, _THIS_DIR)
 
 import driver_pb2, driver_pb2_grpc
+from .utils import is_trap_element, normalize_label, find_aria_element, click_aria_element, extract_label_from_selector
 
 _pw = None
 _browser = None
@@ -50,40 +51,12 @@ def to_interactables(a11y: dict) -> list[dict]:
         name = node.get('name') or ''
         disabled = node.get('disabled', False)  # Check disabled state from a11y tree
         if role in ["button", "textbox", "combobox", "link", "menuitem", "checkbox", "radio"]:
-            if role == "textbox" and page_ref:
-                try:
-                    selector = f"role={role}[name=\"{name}\"]"
-                    is_trap = page_ref.evaluate(
-                        """
-                        () => {
-                          try {
-                            const matches = document.querySelectorAll('*[role="textbox"]');
-                            for (const el of matches) {
-                              const ariaLabel = el.getAttribute('aria-label') || el.textContent || '';
-                              if (ariaLabel.trim() === '%s') {
-                                if (el.hasAttribute('data-content-editable-root-tiny-selection-trap')) return true;
-                                const trapParent = el.closest('[data-content-editable-root-tiny-selection-trap]');
-                                if (trapParent) return true;
-                              }
-                            }
-                            return false;
-                          } catch (e) { return false; }
-                        }
-                        """ % name
-                    )
-                    if is_trap:
-                        return
-                except Exception:
-                    pass
+            if role == "textbox":
+                # Check for trap elements (rich text editor helpers)
+                if is_trap_element(page_ref, name):
+                    return
             # Normalize keyboard-hint suffixes for menu entries (e.g., "G then S")
-            label_out = name
-            if role in ("menuitem", "option"):
-                try:
-                    label_out = re.sub(r'(?i)\\b([A-Z])\\s*then\\s*([A-Z])\\b', '', label_out).strip()
-                    label_out = re.sub(r'(?i)\\b[A-Z]then[A-Z]\\b', '', label_out).strip()
-                    label_out = re.sub(r'\\s{2,}', ' ', label_out).strip()
-                except Exception:
-                    pass
+            label_out = normalize_label(name) if role in ("menuitem", "option") else name
             
             # Note: a11y tree doesn't have tag/class info, we'll get it from extra_items
             out.append({
@@ -269,15 +242,12 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             
             if not role or not name:
                 continue
+            
+            # Filter trap elements from extra_items as well
+            if role == "textbox" and is_trap_element(_page, name):
+                continue
             # Normalize keyboard-hint suffixes for menu/option names
-            label_out = name
-            if role in ("menuitem", "option"):
-                try:
-                    label_out = re.sub(r'(?i)\\b([A-Z])\\s*then\\s*([A-Z])\\b', '', label_out).strip()
-                    label_out = re.sub(r'(?i)\\b[A-Z]then[A-Z]\\b', '', label_out).strip()
-                    label_out = re.sub(r'\\s{2,}', ' ', label_out).strip()
-                except Exception:
-                    pass
+            label_out = normalize_label(name) if role in ("menuitem", "option") else name
             key = (role, label_out)
             if key in seen:
                 continue
@@ -474,35 +444,12 @@ Respond with ONLY a number (the idx or -1)."""
             # Relaxed handling for ARIA option/menuitem with keyboard-hint names
             if isinstance(selector, str) and (selector.startswith('role=option[name="') or selector.startswith('role=menuitem[name="')):
                 m = re.match(r'^role=(option|menuitem)\[name="(.+?)"\]$', selector)
+                role_type = m.group(1) if m else ''
                 desired_label = m.group(2) if m else ''
-                try:
-                    desired_label = re.sub(r'(?i)\b([A-Z])\s*then\s*([A-Z])\b', '', desired_label).strip()
-                    desired_label = re.sub(r'(?i)\b[A-Z]then[A-Z]\b', '', desired_label).strip()
-                    desired_label = re.sub(r'\s{2,}', ' ', desired_label).strip()
-                except Exception:
-                    pass
-                candidates = [
-                    _page.get_by_role('option', name=desired_label).first,
-                    _page.get_by_role('menuitem', name=desired_label).first,
-                    _page.locator('[role="option"]', has_text=desired_label).first,
-                    _page.locator('[role="menuitem"]', has_text=desired_label).first,
-                ]
-                try:
-                    regex = re.compile(re.escape(desired_label), re.IGNORECASE)
-                    candidates.extend([
-                        _page.locator('[role="option"]').filter(has_text=regex).first,
-                        _page.locator('[role="menuitem"]').filter(has_text=regex).first,
-                    ])
-                except Exception:
-                    pass
-                for c in candidates:
-                    try:
-                        if c and c.count() > 0:
-                            c.wait_for(state='visible', timeout=1000)
-                            loc = c
-                            break
-                    except Exception:
-                        continue
+                if role_type and desired_label:
+                    found_loc = find_aria_element(_page, role_type, desired_label, _page, for_screenshot=True)
+                    if found_loc:
+                        loc = found_loc
             # Best-effort wait
             try:
                 loc.wait_for(state='visible', timeout=3000)
@@ -557,113 +504,15 @@ Respond with ONLY a number (the idx or -1)."""
                         # Robust handling for ARIA option/menuitem/link selectors (menus, listboxes, dropdowns)
                         if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="') or sel.startswith('role=link[name="')):
                             m = re.match(r'^role=(option|menuitem|link)\[name="(.+?)"\]$', sel)
+                            role_type = m.group(1) if m else ''
                             desired_label = m.group(2) if m else ''
-                            try:
-                                desired_label = re.sub(r'(?i)\b([A-Z])\s*then\s*([A-Z])\b', '', desired_label).strip()
-                                desired_label = re.sub(r'(?i)\b[A-Z]then[A-Z]\b', '', desired_label).strip()
-                                desired_label = re.sub(r'\s{2,}', ' ', desired_label).strip()
-                            except Exception:
-                                pass
-                            # Ensure a container is open if needed
-                            try:
-                                container = ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first
-                                if container.count() == 0 or not container.is_visible():
-                                    try:
-                                        combo = ctx.locator('[role="combobox"]').filter(has=ctx.locator('[aria-expanded="false"]')).first
-                                        if combo and (combo.count() > 0):
-                                            combo.click(timeout=800)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        (ctx.page.keyboard if hasattr(ctx, 'page') else ctx.keyboard).press('Alt+ArrowDown')
-                                    except Exception:
-                                        pass
-                                    (_page if ctx is _page else ctx.page).wait_for_timeout(200)
-                                ctx.locator('[role="listbox"], [role="menu"], [data-state="open"], [aria-modal="true"]').first.wait_for(state='visible', timeout=8000)
-                            except Exception:
-                                pass
-
-                            candidates = [
-                                ctx.get_by_role('option', name=desired_label).first,
-                                ctx.get_by_role('menuitem', name=desired_label).first,
-                                ctx.get_by_role('link', name=desired_label).first,
-                                ctx.locator('[role="option"]', has_text=desired_label).first,
-                                ctx.locator('[role="menuitem"]', has_text=desired_label).first,
-                                ctx.locator('[role="link"]', has_text=desired_label).first,
-                                ctx.locator('a', has_text=desired_label).first,
-                            ]
-                            try:
-                                regex = re.compile(re.escape(desired_label), re.IGNORECASE)
-                                candidates.extend([
-                                    ctx.locator('[role="option"]').filter(has_text=regex).first,
-                                    ctx.locator('[role="menuitem"]').filter(has_text=regex).first,
-                                    ctx.locator('[role="link"]').filter(has_text=regex).first,
-                                    ctx.locator('a').filter(has_text=regex).first,
-                                ])
-                            except Exception:
-                                pass
                             
-                            # Add more flexible matching for email-like labels
-                            # Extract email part if present (e.g., "Name <email@domain.com>" or just "email@domain.com")
-                            email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', desired_label)
-                            if email_match:
-                                email_only = email_match.group(0)
-                                try:
-                                    candidates.extend([
-                                        ctx.locator('[role="option"]').filter(has_text=email_only).first,
-                                        ctx.locator('[role="menuitem"]').filter(has_text=email_only).first,
-                                        ctx.locator('[role="link"]').filter(has_text=email_only).first,
-                                        ctx.locator('a').filter(has_text=email_only).first,
-                                    ])
-                                except Exception:
-                                    pass
-                            
-                            # Try partial matching - find options containing key parts of the label
-                            label_parts = desired_label.split()
-                            if len(label_parts) > 1:
-                                for part in label_parts:
-                                    if len(part) > 3:  # Only use meaningful parts
-                                        try:
-                                            candidates.extend([
-                                                ctx.locator('[role="option"]').filter(has_text=part).first,
-                                                ctx.locator('[role="menuitem"]').filter(has_text=part).first,
-                                                ctx.locator('[role="link"]').filter(has_text=part).first,
-                                                ctx.locator('a').filter(has_text=part).first,
-                                            ])
-                                        except Exception:
-                                            pass
-                            
-                            clicked = False
-                            for cand in candidates:
-                                try:
-                                    if cand and cand.count() > 0:
-                                        try:
-                                            cand.scroll_into_view_if_needed(timeout=1000)
-                                        except Exception:
-                                            pass
-                                        cand.wait_for(state='visible', timeout=8000)
-                                        cand.click(timeout=5000)
-                                        (_page if ctx is _page else ctx.page).wait_for_timeout(200)
-                                        clicked = True
-                                        break
-                                except Exception as e:
-                                    if DEBUG:
-                                        print(f"    [DEBUG] Candidate failed: {e}")
-                                    continue
-                            if clicked:
-                                return driver_pb2.ActResponse(ok=True)
-                            
-                            # Last resort: try to find ANY visible option/menuitem/link in a dropdown and click it if only one is available
-                            try:
-                                all_options = ctx.locator('[role="option"]:visible, [role="menuitem"]:visible, [role="listbox"] a:visible')
-                                if all_options.count() == 1:
-                                    all_options.first.click(timeout=5000)
-                                    (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                            if role_type and desired_label:
+                                # Use utility function to handle all the complex ARIA selector logic
+                                if click_aria_element(ctx, role_type, desired_label, _page, debug=DEBUG):
                                     return driver_pb2.ActResponse(ok=True)
-                            except Exception:
-                                pass
                             
-                            # Fall through to default path if not clicked
+                            # Fall through to default path if click failed
 
                         # Default path
                         ctx.locator(sel).first.wait_for(state='visible', timeout=10000)
@@ -685,9 +534,8 @@ Respond with ONLY a number (the idx or -1)."""
                 description = None
                 for sel in iter_selectors():
                     if isinstance(sel, str):
-                        m = re.search(r'\[name="(.+?)"\]', sel)
-                        if m:
-                            description = m.group(1)
+                        description = extract_label_from_selector(sel)
+                        if description:
                             break
                 
                 if description:

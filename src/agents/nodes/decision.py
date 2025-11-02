@@ -93,60 +93,6 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     goal = state.get('goal') or ''
     instruction = state.get('instruction') or ''
     current_url_str = state.get('current_url') or ''
-    
-    # Get recent goal evaluation to check for specific action recommendations
-    goal_reasoning = state.get('goal_evaluation_reasoning') or ''
-    missing_steps = state.get('goal_missing_steps') or []
-    missing_steps_text = ', '.join(str(step) for step in missing_steps) if missing_steps else 'None'
-    
-    # Extract button/action names mentioned in missing steps (FORCE preference)
-    mentioned_actions = set()
-    if missing_steps or goal_reasoning:
-        all_text = ' '.join(str(step) for step in missing_steps) + ' ' + goal_reasoning.lower()
-        
-        # Pattern 1: "click Send", "click the Send button", "click 'Send' button", etc.
-        # More flexible: handles quotes or no quotes
-        matches1 = re.findall(r'(?:click|press|select|use|activate)\s+(?:and\s+)?(?:activate\s+and\s+)?(?:the\s+)?(?:"|\'|)([\w]+)(?:"|\'|)?(?:\s+button)?', all_text, re.IGNORECASE)
-        for action_name in matches1:
-            clean_name = action_name.strip().lower()
-            if len(clean_name) > 2 and clean_name not in ['the', 'and', 'to', 'for']:  # Filter out noise
-                mentioned_actions.add(clean_name)
-        
-        # Pattern 2: Standalone button names like "Send button", "'Send' button"
-        matches2 = re.findall(r'(?:"|\'|)([\w]+)(?:"|\'|)?\s+button', all_text, re.IGNORECASE)
-        for action_name in matches2:
-            clean_name = action_name.strip().lower()
-            if len(clean_name) > 2:
-                mentioned_actions.add(clean_name)
-        
-        # Pattern 3: Simple button mention: "the Send button", "Send button"
-        matches3 = re.findall(r'(?:the\s+)?([\w]+)\s+button', all_text, re.IGNORECASE)
-        for action_name in matches3:
-            clean_name = action_name.strip().lower()
-            if len(clean_name) > 2 and clean_name not in ['the', 'and', 'to', 'for']:
-                mentioned_actions.add(clean_name)
-        
-        # Debug: show what we extracted
-        if mentioned_actions:
-            print(f"  🔍 Goal evaluation mentions actions: {', '.join(sorted(mentioned_actions))}")
-        elif missing_steps or goal_reasoning:
-            # Debug output if no matches found
-            print(f"  ℹ️  No action names extracted from missing steps (text: {all_text[:100]}...)")
-    
-    # Identify candidates that match mentioned actions from goal evaluation
-    matching_candidates = []
-    if mentioned_actions:
-        for idx, candidate in enumerate(candidates):
-            candidate_label = (candidate.get('label') or '').lower()
-            # Check for exact or very close matches
-            for mentioned_action in mentioned_actions:
-                if len(mentioned_action) > 2:
-                    # Exact match or contained match
-                    if mentioned_action == candidate_label or \
-                       (mentioned_action in candidate_label and len(mentioned_action) > 3) or \
-                       (candidate_label in mentioned_action and len(candidate_label) > 3):
-                        matching_candidates.append((idx, candidate.get('label'), mentioned_action))
-                        print(f"    ✅ Match found: '{candidate.get('label')}' matches '{mentioned_action}' from goal evaluation")
 
     prompt = f"""You are an autonomous web agent policy. Choose the best next UI action by index.
 
@@ -156,22 +102,16 @@ Context:
 - Current URL: {current_url_str}
 - Errors/Validation: {json.dumps(errors)}
 - Recent actions (last 5): {json.dumps(recent)}
-- Recent goal evaluation reasoning: {goal_reasoning}
-- Missing steps identified: {missing_steps_text}
 
 Candidates (select one by index 'i'):
 {json.dumps(candidates, indent=2)}
 
-{f"**CRITICAL MATCHES FOUND**: The following candidates match actions mentioned in missing steps: {', '.join(f'index {idx} (\"{label}\" matches \"{action}\")' for idx, label, action in matching_candidates)}" if matching_candidates else ""}
-
 Decision principles (generic, app-agnostic):
-1) **MANDATORY PRIORITY**: The "missing steps" explicitly state what action needs to be taken next. You MUST select the candidate that matches the action mentioned in missing steps. {"If matches are listed above, you MUST select one of those matching candidates." if matching_candidates else ""} For example, if missing steps say "Click the Send button", you MUST select the candidate with label "Send" or containing "Send", regardless of scores. This is non-negotiable - the goal evaluation has already determined what needs to happen.
-2) Only if no candidate matches the missing steps should you consider other factors.
-3) Prefer actions that clearly advance the stated goal.
-4) When high-quality options are absent, prefer low-risk exploration (e.g., scroll, open menu) to reveal better options.
-5) If validation or error signals exist, prioritize resolving them.
-6) Avoid repeating ineffective recent actions.
-7) Be honest about candidate quality in the rationale.
+1) Prefer actions that clearly advance the stated goal.
+2) When high-quality options are absent, prefer low-risk exploration (e.g., scroll, open menu) to reveal better options.
+3) If validation or error signals exist, prioritize resolving them.
+4) Avoid repeating ineffective recent actions.
+5) Be honest about candidate quality in the rationale.
 
 Return ONLY valid JSON:
 {{
