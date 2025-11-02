@@ -2,11 +2,46 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 
 from ..state import AgentState, ScoredAction
-from ..utils.dom import summarize_accessibility_tree
 from ..utils.logger import get_logger
 from ..utils.json_parser import extract_json_array
 from ..utils.combobox import is_combobox_field, build_combobox_hints_for_scoring
 from .common import client
+
+
+def _filter_empty_fields(element: Dict[str, Any]) -> Dict[str, Any]:
+    """Filter out empty fields from an interactable element to reduce payload size.
+    
+    Removes:
+    - Empty strings: ""
+    - Empty lists: []
+    - Fields with None values
+    
+    Keeps:
+    - role, label, selector, disabled (always)
+    - placeholder, type, href, tag, id, classes (only if non-empty)
+    """
+    filtered = {
+        'role': element.get('role', ''),
+        'label': element.get('label', ''),
+        'selector': element.get('selector', ''),
+        'disabled': element.get('disabled', False),
+    }
+    
+    # Only add optional fields if they have meaningful values
+    if element.get('placeholder'):
+        filtered['placeholder'] = element['placeholder']
+    if element.get('type'):
+        filtered['type'] = element['type']
+    if element.get('href'):
+        filtered['href'] = element['href']
+    if element.get('tag'):
+        filtered['tag'] = element['tag']
+    if element.get('id'):
+        filtered['id'] = element['id']
+    if element.get('classes') and len(element.get('classes', [])) > 0:
+        filtered['classes'] = element['classes']
+    
+    return filtered
 
 
 def _action_key_from_scored(action: ScoredAction) -> str:
@@ -246,9 +281,11 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     max_elements = int(state.get('scoring_max_elements') or 80)
 
     # Prepare context for LLM
-    dom_summary = summarize_accessibility_tree(state.get('dom_snapshot') or {})
     interactables_full = state.get('interactable_elements') or []
     interactables = interactables_full[:max_elements]
+    
+    # Filter out empty fields to reduce payload size
+    filtered_interactables = [_filter_empty_fields(elem) for elem in interactables]
 
     if logger:
         logger.log(f"Analyzing {len(interactables)} interactable elements (from {len(interactables_full)} total)")
@@ -285,7 +322,7 @@ Recent Actions (last 5):
 
 {"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
 # AVAILABLE INTERACTIVE ELEMENTS
-{json.dumps(interactables, indent=2)}
+{json.dumps(filtered_interactables)}
 
 # SCORING SCALE
 - 10 = Directly achieves the goal or is the next critical step

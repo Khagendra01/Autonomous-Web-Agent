@@ -159,15 +159,15 @@ Current URL: {current_url_str}
 Step Count: {step_count}
 
 Errors/Validation Issues:
-{json.dumps(errors, indent=2) if errors else "None"}
+{json.dumps(errors) if errors else "None"}
 
 Recent Actions (last 5):
-{json.dumps(recent, indent=2) if recent else "None"}
+{json.dumps(recent) if recent else "None"}
 
 {"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
 # CANDIDATE ACTIONS
 Select one candidate by its index 'i':
-{json.dumps(candidates, indent=2)}
+{json.dumps(candidates)}
 
 # DECISION PRINCIPLES
 

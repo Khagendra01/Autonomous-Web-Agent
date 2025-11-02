@@ -84,6 +84,32 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
 
     # Build dynamic context hints (Option 6)
     dynamic_hints = _build_dynamic_evaluation_context(state, last_action)
+    
+    # Create compact UI state summary instead of sending full interactable list
+    # (Full list already sent in scoring node, no need to duplicate)
+    interactables_full = state.get('interactable_elements', [])
+    ui_state_summary = {}
+    if interactables_full:
+        # Count elements by type
+        role_counts = {}
+        submit_buttons = []
+        for elem in interactables_full:
+            role = elem.get('role', 'unknown')
+            role_counts[role] = role_counts.get(role, 0) + 1
+            
+            # Track submit/confirmation buttons
+            label = (elem.get('label') or '').lower()
+            if any(term in label for term in ['submit', 'send', 'confirm', 'save', 'done', 'complete', 'finish']):
+                submit_buttons.append({
+                    'label': elem.get('label', ''),
+                    'disabled': elem.get('disabled', False)
+                })
+        
+        ui_state_summary = {
+            'total_elements': len(interactables_full),
+            'elements_by_role': role_counts,
+            'submit_buttons': submit_buttons[:5] if submit_buttons else []  # Limit to top 5
+        }
 
     # Build structured prompt with clear sections (Option 2)
     prompt = f"""# ROLE & OBJECTIVE
@@ -96,20 +122,20 @@ Current URL: {state.get('current_url', '')}
 Steps Taken: {state.get('step_count', 0)}
 
 Errors/Validation Issues:
-{json.dumps(state.get('errors', []), indent=2) if state.get('errors') else "None"}
+{json.dumps(state.get('errors', [])) if state.get('errors') else "None"}
 
 {"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
 # ACTION HISTORY
 
 Most Recent Action:
-{json.dumps(last_action, indent=2) if last_action else "None"}
+{json.dumps(last_action) if last_action else "None"}
 
 Complete Action History (chronological, last 10):
-{json.dumps(action_details, indent=2)}
+{json.dumps(action_details)}
 
 # CURRENT UI STATE
-Available Interactive Elements:
-{json.dumps(state.get('interactable_elements', []), indent=2) if state.get('interactable_elements') else "None"}
+UI State Summary:
+{json.dumps(ui_state_summary) if ui_state_summary else "No interactable elements available"}
 
 # EVALUATION PRINCIPLES
 
