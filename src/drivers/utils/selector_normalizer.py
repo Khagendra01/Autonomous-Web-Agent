@@ -78,6 +78,53 @@ def normalize_label(label: str, remove_keyboard_hints: bool = True) -> str:
     return result
 
 
+def is_placeholder_text(label: str) -> bool:
+    """Detect if a label is placeholder/example text that shouldn't be interacted with.
+    
+    Common patterns:
+    - "name@gmail.com" (generic email placeholder)
+    - "example@..." (example email)
+    - "email@example.com" (generic email format)
+    - Labels with ellipsis "..." indicating placeholder
+    
+    Args:
+        label: The label text to check
+    
+    Returns:
+        True if the label appears to be placeholder/example text
+    """
+    if not label:
+        return False
+    
+    label_lower = label.lower().strip()
+    
+    # Common placeholder patterns
+    placeholder_patterns = [
+        r'^name@.*\.com.*$',  # name@gmail.com, name@gmail.com, …
+        r'^example@.*$',  # example@email.com
+        r'^email@.*\.com.*$',  # email@example.com
+        r'^.*@.*\.com.*,.*@.*\.com',  # Multiple email pattern
+        r'^.*@.*\.com.*\.\.\.?$',  # Email with ellipsis
+    ]
+    
+    for pattern in placeholder_patterns:
+        if re.match(pattern, label_lower):
+            return True
+    
+    # Check for generic words combined with email pattern
+    generic_words = ['name', 'example', 'sample', 'demo', 'test', 'placeholder']
+    if '@' in label_lower:
+        # If it contains an email pattern and generic words, likely placeholder
+        if any(word in label_lower for word in generic_words):
+            return True
+    
+    # Check for ellipsis patterns (often indicate truncated/placeholder)
+    if '…' in label or (label.count(',') > 1 and '@' in label):
+        return True
+    
+    return False
+
+
 def extract_label_from_selector(selector: str) -> str | None:
     """Extract the label from a role-based selector.
     
