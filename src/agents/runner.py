@@ -8,7 +8,6 @@ from .workflow import create_agent_workflow
 from ..drivers.grpc_client import DriverClient
 from .state import AgentState
 from .utils.storage import RunStorage
-from .utils.logger import init_logger, get_logger
 from dotenv import load_dotenv
 
 
@@ -101,19 +100,6 @@ def run_task(
         task_slug=task_slug
     )
     
-    # Initialize logger for real-time logging
-    log_file_path = str(storage.root / 'execution.log')
-    logger = init_logger(log_file_path)
-    logger.log_section("AGENT WORKFLOW STARTED", f"Instruction: {instruction or goal or 'N/A'}")
-    logger.log_dict("Initial Configuration", {
-        'goal': goal,
-        'instruction': instruction,
-        'start_url': start_url,
-        'app_name': app_name,
-        'max_steps': max_steps,
-        'output_dir': str(storage.root)
-    })
-    
     # Create initial state
     initial_state: AgentState = {
         'instruction': instruction or (goal or ''),
@@ -126,9 +112,7 @@ def run_task(
         'screenshot_bytes': None,
         'dom_snapshot': None,
         'interactable_elements': [],
-        'prev_interactable_count': 0,
         'errors': [],
-        'active_context': None,
         'action_history': [],
         'screenshots': [],
         'scored_actions': [],
@@ -137,14 +121,6 @@ def run_task(
         'error': None,
         'stuck_count': 0,
         'tried_actions_by_url': {},
-        'prev_interactable_elements': None,
-        'sub_tasks': [],
-        'current_sub_task_index': 0,
-        'requirements': {},
-        'predicate_truths': {},
-        'execution_step_lock': None,
-        'last_evaluated_step': None,
-        'target_entity': None,
     }
     
     # Create and run workflow
@@ -203,15 +179,6 @@ def run_task(
         # Save manifest
         storage.flush()
         
-        # Close logger
-        logger = get_logger()
-        if logger:
-            logger.log_section("AGENT WORKFLOW COMPLETED", 
-                f"Goal reached: {final_state['goal_reached']}\n"
-                f"Steps taken: {final_state['step_count']}\n"
-                f"Error: {final_state.get('error', 'None')}")
-            logger.close()
-        
         # Print summary
         print(f"\n{'='*60}")
         print(f"✅ Task completed!")
@@ -231,20 +198,11 @@ def run_task(
         
     except KeyboardInterrupt:
         print("\n\n⚠️  Interrupted by user")
-        logger = get_logger()
-        if logger:
-            logger.log("Workflow interrupted by user", "ERROR")
-            logger.close()
         return False
     except Exception as e:
         print(f"\n\n❌ Error during workflow execution: {e}")
         import traceback
         traceback.print_exc()
-        logger = get_logger()
-        if logger:
-            logger.log(f"Workflow error: {str(e)}", "ERROR")
-            logger.log(traceback.format_exc(), "ERROR")
-            logger.close()
         return False
 
 

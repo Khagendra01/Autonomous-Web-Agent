@@ -29,9 +29,7 @@ class AgentState(TypedDict):
     screenshot_bytes: Optional[bytes]
     dom_snapshot: Optional[Dict[str, Any]]
     interactable_elements: List[Dict[str, Any]]
-    prev_interactable_count: int
     errors: List[str]
-    active_context: Optional[Dict[str, Any]]
     
     # History
     action_history: List[Dict[str, Any]]
@@ -49,35 +47,4 @@ class AgentState(TypedDict):
     # Anti-loop memory
     # Map of URL -> list of action keys that were already tried on that view
     tried_actions_by_url: Dict[str, List[str]]
-    
-    # Temporal tracking for element detection
-    prev_interactable_elements: Optional[List[Dict[str, Any]]]  # Elements from previous observation
-    
-    # Sub-task tracking (for multi-step goals)
-    sub_tasks: Optional[List[Dict[str, Any]]]  # Parsed sub-tasks with completion tracking
-    current_sub_task_index: int  # Which sub-task we're currently working on
-
-    # Declarative requirements and gating
-    # Generic requirement predicates normalized by upstream nodes (e.g., parser/bootstrap/evaluator)
-    # Examples: { "titleSet": true, "assigneeSet": true, "projectSet": true }
-    requirements: Dict[str, bool]
-    # Deterministic predicate truths observed from the DOM (persisted UI state)
-    predicate_truths: Dict[str, bool]
-    # Internal locks / cadence controls
-    execution_step_lock: Optional[int]  # Prevent duplicate execute within same step
-    last_evaluated_step: Optional[int]  # Prevent duplicate evaluate within same step
-    max_actions_per_step: int  # Limit actions per step (default: 1, following browser-use best practice)
-    consecutive_empty_actions: int  # Track consecutive empty action attempts for retry logic
-
-    # Target entity anchoring (object permanence across steps)
-    # Example for issues: { "id": "ALP-7", "title": "Clean up the UI", "url": "/issue/ALP-7/..." }
-    target_entity: Optional[Dict[str, Any]]
-    
-    # LLM-oriented DOM representation (from observe_node)
-    llm_dom: Optional[str]  # Formatted DOM with [index]<tag>text</tag> format
-    llm_index_to_selector: Optional[Dict[int, str]]  # Map of index -> selector for action resolution
-    
-    # Error feedback for LLM (short-term and long-term memory)
-    short_term_error_memory: Optional[str]  # Shown once to LLM (e.g., available actions)
-    long_term_error_memory: Optional[str]  # Persistent error info stored in agent memory
 

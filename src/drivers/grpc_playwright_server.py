@@ -24,12 +24,6 @@ _page: Page | None = None
 
 DEBUG = str(os.environ.get('DEBUG') or '').strip().lower() in ['1', 'true', 'yes', 'on']
 
-# Simple throttle cache for expensive extra_items scan
-_last_extra_items_cache = {
-    'ts': 0.0,
-    'result': {'items': [], 'containerInfo': []},
-}
-
 
 def _visible_js() -> str:
     return (
@@ -98,13 +92,10 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 _pw = sync_playwright().start()
             user_dir = Path('chrome-user')
             user_dir.mkdir(exist_ok=True)
-            headless_env = str(os.environ.get('HEADLESS') or '').strip().lower()
-            headless_default = False
-            headless_flag = headless_default if headless_env == '' else (headless_env in ['1', 'true', 'yes', 'on'])
             _context = _pw.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),
                 channel="chrome",
-                headless=headless_flag,
+                headless=False,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
@@ -113,7 +104,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             )
             _page = _context.new_page()
             _page.goto(start_url, wait_until='load')
-            # Avoid unconditional sleeps; rely on wait_until above
+            _page.wait_for_timeout(1000)
             return driver_pb2.InitResponse(ok=True, start_url=start_url)
         except Exception as e:
             return driver_pb2.InitResponse(ok=False, error=str(e))
@@ -123,14 +114,8 @@ class DriverService(driver_pb2_grpc.DriverServicer):
         url = _page.url
         a11y = _page.accessibility.snapshot(interesting_only=True)
         interactables = to_interactables(a11y or {})
-        # Throttled extra_items scan: reuse if called within 400ms
-        extra_items_result = None
         try:
-            now_ts = time.time()
-            if now_ts - float(_last_extra_items_cache.get('ts') or 0.0) < 0.4:
-                extra_items_result = _last_extra_items_cache.get('result')
-            if not extra_items_result:
-                extra_items_result = _page.evaluate(
+            extra_items = _page.evaluate(
                 """
                 () => {
                   function visible(el) {
@@ -178,25 +163,10 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                     } catch (e) {}
                   }
                   const candidates = new Set();
-                  const containerInfo = [];
                   // 1) From open containers: menu/option/button/link
                   for (const root of containers) {
                     if (!visible(root)) continue;
-                    const containerRole = root.getAttribute('role') || root.tagName.toLowerCase();
-                    const containerId = root.id || '';
-                    const containerClasses = Array.from(root.classList || []).slice(0, 3).join('.');
                     const els = root.querySelectorAll('[role="menuitem"], [role="option"], button, a');
-                    const optionCount = Array.from(els).filter(el => {
-                      const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
-                      return role === 'option';
-                    }).length;
-                    containerInfo.push({
-                      role: containerRole,
-                      id: containerId,
-                      classes: containerClasses,
-                      totalElements: els.length,
-                      optionCount: optionCount
-                    });
                     els.forEach(el => {
                       if (!visible(el)) return;
                       const role = el.getAttribute('role') || (el.tagName.toLowerCase() === 'a' ? 'link' : (el.tagName.toLowerCase() === 'button' ? 'button' : ''));
@@ -211,35 +181,10 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       const href = el.getAttribute('href') || '';
                       const type = el.getAttribute('type') || '';
                       const placeholder = el.getAttribute('placeholder') || '';
-                      const rect = el.getBoundingClientRect();
-                      const bbox = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
-                      const inViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
-                      const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-                      const style = window.getComputedStyle(el);
-                      const opacity = parseFloat(style.opacity || '1');
-                      const pointerEvents = style.pointerEvents || '';
-                      const zIndex = style.zIndex || '';
-                      const aria = {
-                        selected: el.getAttribute('aria-selected'),
-                        checked: el.getAttribute('aria-checked'),
-                        expanded: el.getAttribute('aria-expanded'),
-                        pressed: el.getAttribute('aria-pressed'),
-                        current: el.getAttribute('aria-current'),
-                        required: el.getAttribute('aria-required'),
-                        invalid: el.getAttribute('aria-invalid'),
-                        haspopup: el.getAttribute('aria-haspopup')
-                      };
-                      let tabindexAttr = el.getAttribute('tabindex');
-                      let tabIndexNum = null;
-                      if (tabindexAttr !== null && tabindexAttr !== undefined && tabindexAttr !== '') {
-                        const n = parseInt(tabindexAttr, 10);
-                        if (!Number.isNaN(n)) tabIndexNum = n;
-                      }
-                      const focus = { tabindex: tabIndexNum, focusable: ((typeof el.tabIndex === 'number' && el.tabIndex >= 0) || (tabIndexNum !== null && tabIndexNum >= 0)), contentEditable: !!el.isContentEditable };
                       const key = role + '|' + name;
                       if (candidates.has(key)) return;
                       candidates.add(key);
-                      results.push({ role, name, disabled, tag, classes, id, href, type, placeholder, bbox, inViewport, center, opacity, pointerEvents, zIndex, aria, focus });
+                      results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
                     });
                   }
                   // 2) Inputs/textareas/contenteditable/comboboxes across the page
@@ -270,77 +215,20 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                         }
                         if (!role || !name) return;
                         name = name.replace(/\\s+/g, ' ').trim();
-                        const rect = el.getBoundingClientRect();
-                        const bbox = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
-                        const inViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
-                        const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-                        const style = window.getComputedStyle(el);
-                        const opacity = parseFloat(style.opacity || '1');
-                        const pointerEvents = style.pointerEvents || '';
-                        const zIndex = style.zIndex || '';
-                        const aria = {
-                          selected: el.getAttribute('aria-selected'),
-                          checked: el.getAttribute('aria-checked'),
-                          expanded: el.getAttribute('aria-expanded'),
-                          pressed: el.getAttribute('aria-pressed'),
-                          current: el.getAttribute('aria-current'),
-                          required: el.getAttribute('aria-required'),
-                          invalid: el.getAttribute('aria-invalid'),
-                          haspopup: el.getAttribute('aria-haspopup')
-                        };
-                        let tabindexAttr = el.getAttribute('tabindex');
-                        let tabIndexNum = null;
-                        if (tabindexAttr !== null && tabindexAttr !== undefined && tabindexAttr !== '') {
-                          const n = parseInt(tabindexAttr, 10);
-                          if (!Number.isNaN(n)) tabIndexNum = n;
-                        }
-                        const focus = { tabindex: tabIndexNum, focusable: ((typeof el.tabIndex === 'number' && el.tabIndex >= 0) || (tabIndexNum !== null && tabIndexNum >= 0)), contentEditable: !!el.isContentEditable };
                         const key = role + '|' + name;
                         if (candidates.has(key)) return;
                         candidates.add(key);
-                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder, bbox, inViewport, center, opacity, pointerEvents, zIndex, aria, focus });
+                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
                       });
                     } catch(e) {}
                   }
-                  return { items: results, containerInfo: containerInfo };
+                  return results;
                 }
                 """
-                )
-                _last_extra_items_cache['ts'] = now_ts
-                # Ensure dict format
-                if isinstance(extra_items_result, dict):
-                    _last_extra_items_cache['result'] = extra_items_result
-                else:
-                    _last_extra_items_cache['result'] = {'items': (extra_items_result or []), 'containerInfo': []}
+            )
         except Exception:
-            extra_items_result = {'items': [], 'containerInfo': []}
-        
-        # Extract items and container info
-        if isinstance(extra_items_result, dict):
-            extra_items = extra_items_result.get('items', [])
-            container_info = extra_items_result.get('containerInfo', [])
-        else:
-            # Fallback for old format
-            extra_items = extra_items_result if extra_items_result else []
-            container_info = []
-        
-        # DEBUG: Log container info
-        if DEBUG and container_info:
-            print(f"[DRIVER DEBUG] Found {len(container_info)} container(s):")
-            for ci in container_info:
-                print(f"  - role={ci.get('role')}, id='{ci.get('id')}', classes='{ci.get('classes')}', totalElements={ci.get('totalElements')}, optionCount={ci.get('optionCount')}")
-        
-        # DEBUG: Log all role=option elements from a11y tree
-        a11y_options = [item for item in interactables if item.get('role') == 'option']
-        if DEBUG and a11y_options:
-            print(f"[DRIVER DEBUG] a11y tree found {len(a11y_options)} option(s):")
-            for opt in a11y_options:
-                print(f"  - role={opt['role']}, label='{opt['label']}', selector='{opt['selector']}'")
-        
+            extra_items = []
         seen = {(item['role'], item['label']) for item in interactables}
-        skipped_options = []
-        added_options = []
-        
         for it in extra_items or []:
             role = it.get('role')
             name = it.get('name') or ''
@@ -351,14 +239,6 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             href = it.get('href', '')
             elem_type = it.get('type', '')
             placeholder = it.get('placeholder', '')
-            bbox = it.get('bbox') or {}
-            in_viewport = bool(it.get('inViewport'))
-            center = it.get('center') or {}
-            opacity = it.get('opacity')
-            pointer_events = it.get('pointerEvents') or ''
-            z_index = it.get('zIndex') or ''
-            aria = it.get('aria') or {}
-            focus = it.get('focus') or {}
             
             if not role or not name:
                 continue
@@ -370,101 +250,20 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
             key = (role, label_out)
             if key in seen:
-                if role == 'option':
-                    skipped_options.append({'role': role, 'name': name, 'normalized': label_out, 'reason': 'already in seen'})
                 continue
             seen.add(key)
-            
-            if role == 'option':
-                added_options.append({'role': role, 'name': name, 'normalized': label_out, 'selector': f'role={role}[name="{label_out}"]'})
-            
-            # Encode extra metadata as class tokens to avoid proto changes
-            try:
-                bx = int(bbox.get('x') or 0); by = int(bbox.get('y') or 0); bw = int(bbox.get('width') or 0); bh = int(bbox.get('height') or 0)
-            except Exception:
-                bx = by = bw = bh = 0
-            meta_tokens = [
-                f"__bbox_{bx}_{by}_{bw}_{bh}",
-                f"__vp_{1 if in_viewport else 0}",
-                f"__cx_{int(center.get('x') or 0)}",
-                f"__cy_{int(center.get('y') or 0)}",
-            ]
-            if pointer_events:
-                meta_tokens.append(f"__pe_{pointer_events}")
-            if isinstance(opacity, (int, float)):
-                try:
-                    meta_tokens.append(f"__op_{round(float(opacity), 2)}")
-                except Exception:
-                    pass
-            if z_index:
-                meta_tokens.append(f"__zi_{z_index}")
-            for k in ('selected','checked','expanded','pressed','current','required','invalid','haspopup'):
-                v = aria.get(k)
-                if v is not None and str(v) != '':
-                    meta_tokens.append(f"__aria_{k}_{str(v).lower()}")
-            # Focus tokens
-            tabindex = focus.get('tabindex')
-            if tabindex is not None:
-                try:
-                    meta_tokens.append(f"__tb_{int(tabindex)}")
-                except Exception:
-                    pass
-            if 'focusable' in focus:
-                meta_tokens.append(f"__fc_{1 if focus.get('focusable') else 0}")
-            if focus.get('contentEditable'):
-                meta_tokens.append("__ce_1")
-
-            # Stable element key
-            try:
-                import hashlib as _hashlib
-                ek_basis = json.dumps({
-                    'tag': tag,
-                    'id': elem_id,
-                    'classes': (classes or [])[:6],
-                    'bbox': {'x': bx, 'y': by, 'w': bw, 'h': bh},
-                    'role': role,
-                    'label': label_out,
-                }, separators=(",", ":"), ensure_ascii=False)
-                ek = _hashlib.md5(ek_basis.encode('utf-8')).hexdigest()[:12]
-                meta_tokens.append(f"__ek_{ek}")
-            except Exception:
-                pass
-
             interactables.append({
                 'role': role, 
                 'label': label_out, 
                 'selector': f'role={role}[name="{label_out}"]', 
                 'disabled': disabled,
                 'tag': tag,
-                'classes': classes + meta_tokens,
+                'classes': classes,
                 'id': elem_id,
                 'href': href,
                 'type': elem_type,
                 'placeholder': placeholder
             })
-        
-        # DEBUG: Log all role=option elements from extra_items scan
-        if DEBUG:
-            if extra_items:
-                extra_options_raw = [it for it in extra_items if it.get('role') == 'option']
-                print(f"[DRIVER DEBUG] extra_items scan found {len(extra_options_raw)} option(s) (before normalization):")
-                for opt in extra_options_raw:
-                    print(f"  - role={opt.get('role')}, name='{opt.get('name')}'")
-            if added_options:
-                print(f"[DRIVER DEBUG] Added {len(added_options)} option(s) from extra_items:")
-                for opt in added_options:
-                    print(f"  - {opt['selector']} (original name: '{opt['name']}', normalized: '{opt['normalized']}')")
-            if skipped_options:
-                print(f"[DRIVER DEBUG] Skipped {len(skipped_options)} option(s) (deduplication):")
-                for opt in skipped_options:
-                    print(f"  - role={opt['role']}, name='{opt['name']}', normalized='{opt['normalized']}', reason: {opt['reason']}")
-        
-        # DEBUG: Log final list of all role=option elements
-        final_options = [item for item in interactables if item.get('role') == 'option']
-        if DEBUG and final_options:
-            print(f"[DRIVER DEBUG] Final list: {len(final_options)} option(s) total:")
-            for opt in final_options:
-                print(f"  - {opt['selector']}")
 
         # errors
         error_messages = _page.evaluate(
@@ -603,7 +402,7 @@ If no element matches well, return -1.
 Respond with ONLY a number (the idx or -1)."""
                 
                 response = client.chat.completions.create(
-                    model="gpt-4.1",
+                    model="gpt-4o",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 
@@ -698,34 +497,6 @@ Respond with ONLY a number (the idx or -1)."""
                 yield request.selector
 
         try:
-            if t == 'sequence':
-                # Execute a short sequence of clicks without another agent round-trip
-                if not request.selectors or len(request.selectors) < 2:
-                    return driver_pb2.ActResponse(ok=False, error='sequence requires at least two selectors')
-                for idx, sel in enumerate(request.selectors):
-                    try:
-                        # Reuse robust click logic by temporarily setting request.selector
-                        # Handle ARIA roles specially as in click path
-                        local_last_err = None
-                        if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="') or sel.startswith('role=link[name="')):
-                            m = re.match(r'^role=(option|menuitem|link)\[name="(.+?)"\]$', sel)
-                            role_type = m.group(1) if m else ''
-                            desired_label = m.group(2) if m else ''
-                            if role_type and desired_label:
-                                if click_aria_element(ctx, role_type, desired_label, _page, debug=DEBUG):
-                                    continue
-                        # Default click
-                        ctx.locator(sel).first.wait_for(state='visible', timeout=8000)
-                        try:
-                            ctx.locator(sel).first.scroll_into_view_if_needed(timeout=800)
-                        except Exception:
-                            pass
-                        ctx.locator(sel).first.click(timeout=10000)
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(200)
-                    except Exception as e:
-                        return driver_pb2.ActResponse(ok=False, error=f'sequence step {idx+1} failed: {e}')
-                return driver_pb2.ActResponse(ok=True)
-
             if t == 'click':
                 last_err = None
                 for sel in iter_selectors():
@@ -736,14 +507,8 @@ Respond with ONLY a number (the idx or -1)."""
                             role_type = m.group(1) if m else ''
                             desired_label = m.group(2) if m else ''
                             
-                            if DEBUG:
-                                from .utils.selector_normalizer import normalize_label
-                                normalized = normalize_label(desired_label)
-                                print(f"[DRIVER DEBUG] Extracted from selector: role={role_type}, label='{desired_label}' (will normalize to '{normalized}' and try both)")
-                            
                             if role_type and desired_label:
                                 # Use utility function to handle all the complex ARIA selector logic
-                                # click_aria_element will try both normalized and original label
                                 if click_aria_element(ctx, role_type, desired_label, _page, debug=DEBUG):
                                     return driver_pb2.ActResponse(ok=True)
                             
@@ -756,8 +521,7 @@ Respond with ONLY a number (the idx or -1)."""
                         except Exception:
                             pass
                         ctx.locator(sel).first.click(timeout=12000)
-                        # Short post-click settle when navigation is not expected
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(300)
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)
@@ -787,7 +551,7 @@ Respond with ONLY a number (the idx or -1)."""
                                 print(f"  [DEBUG] SmartLocate found: {smart_resp.selector} (strategy: {smart_resp.strategy})")
                             # Try the smart selector
                             ctx.locator(smart_resp.selector).first.click(timeout=5000)
-                            (_page if ctx is _page else ctx.page).wait_for_timeout(300)
+                            (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
                             return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         if DEBUG:
@@ -797,7 +561,7 @@ Respond with ONLY a number (the idx or -1)."""
             elif t == 'scroll':
                 delta = request.delta or 600
                 (_page if ctx is _page else ctx.page).mouse.wheel(0, delta)
-                (_page if ctx is _page else ctx.page).wait_for_timeout(150)
+                (_page if ctx is _page else ctx.page).wait_for_timeout(200)
                 return driver_pb2.ActResponse(ok=True)
             elif t == 'type' and request.text:
                 last_err = None
@@ -805,8 +569,8 @@ Respond with ONLY a number (the idx or -1)."""
                     try:
                         loc = ctx.locator(sel).first
                         loc.fill(str(request.text))
-                        # Short pause to allow autocomplete/dropdown to populate
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(300)
+                        # Wait longer after typing to allow autocomplete/dropdown to populate
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(500)
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)
