@@ -16,10 +16,20 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
     print(f"  Reasoning: {action.reasoning}")
     
+    # Resolve selector from index if using browser-use format
+    selector = action.selector
+    if action.index is not None:
+        selector_map = state.get('selector_map', {})
+        if action.index in selector_map:
+            selector = selector_map[action.index]['selector']
+            print(f"  Resolved index {action.index} -> selector: {selector}")
+        else:
+            print(f"  ⚠️  Warning: index {action.index} not found in selector_map, using fallback")
+    
     # Build action payload
     payload = {
         'type': action.action_type,
-        'selector': action.selector,
+        'selector': selector,
     }
     
     if action.action_type == 'type' and action.text:
@@ -27,9 +37,9 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     
     # Capture a focused screenshot around the target (with padding) before executing
     try:
-        if action.selector and action.action_type in ('click', 'type'):
+        if selector and action.action_type in ('click', 'type'):
             try:
-                focused_bytes = driver_client.screenshot_region(action.selector, margin=24)
+                focused_bytes = driver_client.screenshot_region(selector, margin=24)
                 screenshots = state.get('screenshots') or []
                 screenshots = screenshots + [focused_bytes]
                 # Track that this focused screenshot corresponds to the current step index
@@ -96,11 +106,12 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         
         # Record this action as tried for the current URL to avoid repeating it
         current_url = state.get('current_url') or ''
-        tried_map = dict(state.get('tried_actions_by_url') or [])
+        tried_map = dict(state.get('tried_actions_by_url') or {})
         if not isinstance(tried_map, dict):
             tried_map = {}
         tried_here = list(tried_map.get(current_url, []))
-        action_key = f"{action.action_type}|{action.selector}"
+        # Use resolved selector for action key
+        action_key = f"{action.action_type}|{selector}"
         if action_key not in tried_here:
             tried_here.append(action_key)
         tried_map[current_url] = tried_here

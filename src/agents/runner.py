@@ -112,6 +112,8 @@ def run_task(
         'screenshot_bytes': None,
         'dom_snapshot': None,
         'interactable_elements': [],
+        'dom_state_llm_text': None,  # Browser-use format
+        'selector_map': {},  # Index -> element mapping
         'errors': [],
         'action_history': [],
         'screenshots': [],

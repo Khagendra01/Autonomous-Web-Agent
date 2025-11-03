@@ -13,6 +13,7 @@ def _serialize_candidates(base_list: List[ScoredAction], max_candidates: int) ->
             'action_type': a.action_type,
             'label': a.label,
             'selector': a.selector,
+            'index': a.index,  # Include index if available
             'score': a.score,
             'text': a.text,
             'reasoning': a.reasoning,
@@ -148,6 +149,7 @@ Return ONLY valid JSON:
             chosen = ScoredAction(
                 action_type=chosen.action_type,
                 selector=chosen.selector,
+                index=chosen.index,  # Preserve index
                 label=chosen.label,
                 score=chosen.score,
                 reasoning=rationale or chosen.reasoning,
@@ -157,6 +159,7 @@ Return ONLY valid JSON:
             chosen = ScoredAction(
                 action_type=chosen.action_type,
                 selector=chosen.selector,
+                index=chosen.index,  # Preserve index
                 label=chosen.label,
                 score=chosen.score,
                 reasoning=rationale or chosen.reasoning,

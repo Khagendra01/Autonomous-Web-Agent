@@ -7,11 +7,19 @@ from dataclasses import dataclass
 class ScoredAction:
     """An action with its LLM-assigned score."""
     action_type: str  # 'click', 'type', 'scroll'
-    selector: str
-    label: str
-    score: float  # 0-10, higher = more likely to reach goal
-    reasoning: str
+    selector: str  # Legacy selector (for backward compat)
+    index: Optional[int] = None  # New: backend_node_id index (browser-use format)
+    label: str = ""
+    score: float = 0.0  # 0-10, higher = more likely to reach goal
+    reasoning: str = ""
     text: Optional[str] = None  # for 'type' actions
+    
+    def get_selector(self) -> str:
+        """Get selector, preferring index-based lookup if available."""
+        if self.index is not None:
+            # Will be resolved via selector_map
+            return f"index:{self.index}"
+        return self.selector
 
 
 class AgentState(TypedDict):
@@ -28,8 +36,12 @@ class AgentState(TypedDict):
     current_url: str
     screenshot_bytes: Optional[bytes]
     dom_snapshot: Optional[Dict[str, Any]]
-    interactable_elements: List[Dict[str, Any]]
+    interactable_elements: List[Dict[str, Any]]  # Legacy format
     errors: List[str]
+    
+    # Browser-use format DOM state
+    dom_state_llm_text: Optional[str]  # LLM representation of DOM (browser-use format)
+    selector_map: Dict[int, Dict[str, Any]]  # Map from index -> element info
     
     # History
     action_history: List[Dict[str, Any]]

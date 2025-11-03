@@ -9,6 +9,9 @@ from .common import client
 
 def _action_key_from_scored(action: ScoredAction) -> str:
     # Key prioritizes selector + type which best identifies a unique UI action
+    # Include index if available for browser-use format
+    if action.index is not None:
+        return f"{action.action_type}|index:{action.index}|{action.selector}"
     return f"{action.action_type}|{action.selector}"
 
 
@@ -49,17 +52,62 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     model_name = state.get('llm_model') or "gpt-4o"
     max_elements = int(state.get('scoring_max_elements') or 80)
 
-    # Prepare context for LLM
-    dom_summary = summarize_accessibility_tree(state.get('dom_snapshot') or {})
-    interactables_full = state.get('interactable_elements') or []
-    interactables = interactables_full[:max_elements]
+    # Use browser-use format if available, fallback to legacy format
+    dom_state_text = state.get('dom_state_llm_text')
+    selector_map = state.get('selector_map', {})
+    use_browser_use_format = dom_state_text is not None and selector_map
 
     # Build action history summary
     history_summary = []
     for i, action in enumerate((state.get('action_history') or [])[-5:]):  # Last 5 actions
         history_summary.append(f"{i+1}. {action.get('type', '')} on '{action.get('label', 'N/A')}'")
 
-    prompt = f"""You are assisting an autonomous web agent. Score interactive elements by how likely they are to help achieve the goal.
+    if use_browser_use_format:
+        # Use browser-use format
+        prompt = f"""You are assisting an autonomous web agent. Score interactive elements by how likely they are to help achieve the goal.
+
+Context:
+- Goal: {state.get('goal', '')}
+- Instruction: {state.get('instruction', '')}
+- Current URL: {state.get('current_url', '')}
+- Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}
+
+Interactive Elements (browser-use format):
+Each interactive element is shown as [index]<tag>text</tag> with attributes.
+Only elements with [index] are clickable. Use the index number to reference them.
+
+{dom_state_text[:8000]}
+
+Task: Return a JSON array of recommended actions with scores from 0-10 indicating usefulness toward the goal.
+
+Scoring scale:
+- 10 = Directly achieves the goal or is the next critical step
+- 7-9 = Very likely to progress toward the goal
+- 4-6 = Possibly useful or indirectly related
+- 0-3 = Unlikely to help or wrong direction
+
+Generic principles:
+1) Disabled elements are not actionable → score 0-2; prefer enabling steps first.
+2) Prefer elements whose labels/roles semantically match goal terms; consider aria-label, placeholder, title, and text.
+3) If the goal requires data entry, prioritize relevant input fields; if submission is clearly required and ready, prioritize submission controls.
+4) If no strong candidates exist, include low-risk exploration (e.g., scroll/open menu) to reveal options.
+5) Avoid repeating recently ineffective actions.
+6) If there are validation errors, prioritize actions that resolve them.
+
+IMPORTANT: Use the index number from [index] in the format above. For example, if you see [123]<button>Submit</button>, use index 123.
+
+Return ONLY a JSON array of objects like:
+[
+  {{"index": 123, "label": "…", "action_type": "click|type|scroll", "text": "optional", "score": 0-10, "reasoning": "…"}}
+]
+"""
+    else:
+        # Fallback to legacy format
+        dom_summary = summarize_accessibility_tree(state.get('dom_snapshot') or {})
+        interactables_full = state.get('interactable_elements') or []
+        interactables = interactables_full[:max_elements]
+
+        prompt = f"""You are assisting an autonomous web agent. Score interactive elements by how likely they are to help achieve the goal.
 
 Context:
 - Goal: {state.get('goal', '')}
@@ -118,23 +166,47 @@ Return ONLY a JSON array of objects like:
     for a in scored_actions_raw:
         try:
             action_type = str(a.get('action_type'))
-            selector = str(a.get('selector'))
             label = str(a.get('label', ''))
             score = float(a.get('score', 0))
             reasoning = str(a.get('reasoning', ''))
             text = a.get('text')
-            if not action_type or not selector:
-                continue
-            parsed_actions.append(
-                ScoredAction(
-                    action_type=action_type,
-                    selector=selector,
-                    label=label,
-                    score=score,
-                    reasoning=reasoning,
-                    text=text,
+            
+            # Handle browser-use format (index-based) vs legacy (selector-based)
+            index = a.get('index')
+            selector = a.get('selector', '')
+            
+            if use_browser_use_format and index is not None:
+                # Browser-use format: resolve selector from index
+                try:
+                    index_int = int(index)
+                    if index_int in selector_map:
+                        selector = selector_map[index_int].get('selector', '')
+                        parsed_actions.append(
+                            ScoredAction(
+                                action_type=action_type,
+                                selector=selector,
+                                index=index_int,
+                                label=label,
+                                score=score,
+                                reasoning=reasoning,
+                                text=text,
+                            )
+                        )
+                except (ValueError, TypeError):
+                    # Invalid index, skip this action
+                    continue
+            elif selector:
+                # Legacy format: use selector directly
+                parsed_actions.append(
+                    ScoredAction(
+                        action_type=action_type,
+                        selector=selector,
+                        label=label,
+                        score=score,
+                        reasoning=reasoning,
+                        text=text,
+                    )
                 )
-            )
         except Exception:
             continue
 
