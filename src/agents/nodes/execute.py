@@ -35,8 +35,29 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         'selector': action.selector,
     }
     
-    if action.action_type == 'type' and action.text:
-        payload['text'] = action.text
+    # Ensure text exists for type actions; derive if missing
+    if action.action_type == 'type':
+        text_value = action.text
+        if not text_value:
+            try:
+                # Derive minimal sensible text from instruction/goal
+                instr = (state.get('instruction') or state.get('goal') or '').strip()
+                if instr:
+                    # First line, trimmed to a compact length
+                    first_line = instr.splitlines()[0].strip()
+                    text_value = first_line[:120]
+            except Exception:
+                text_value = None
+        if text_value:
+            payload['text'] = text_value
+        else:
+            # Skip malformed type action without text to avoid driver error
+            if logger:
+                logger.log("EXECUTE: Missing text for 'type' action; skipping and re-observing", "WARNING")
+            return {
+                'error': 'Missing text for type action',
+                'stuck_count': state.get('stuck_count', 0) + 1,
+            }
     
     # Log execution details
     if logger:
@@ -128,6 +149,18 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
                     entry[sel] = count + 1
                     registry[label_key] = entry
                     state['selector_registry'] = registry
+        except Exception:
+            pass
+
+        # Brief readiness await after context-opening clicks (generic, dynamic)
+        try:
+            if action.action_type == 'click':
+                lbl = (action.label or '').lower()
+                if any(t in lbl for t in ['create', 'new', 'compose', 'open', 'edit']):
+                    try:
+                        driver_client.act(type='await', kind='timeout', timeout=300)
+                    except Exception:
+                        pass
         except Exception:
             pass
 
@@ -230,6 +263,16 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             tried_here.append(action_key)
         tried_map[current_url] = tried_here
         
+        # Track in-form progress: after any type action, increment; after selecting an option, too
+        form_progress = int(state.get('form_progress') or 0)
+        try:
+            if action.action_type == 'type':
+                form_progress += 1
+            elif action.action_type == 'click' and isinstance(action.selector, str) and 'role=option' in action.selector.lower():
+                form_progress += 1
+        except Exception:
+            pass
+
         return {
             'action_history': state['action_history'] + [action_record],
             'step_count': state['step_count'] + 1,
@@ -241,6 +284,7 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'target_entity': target_entity or state.get('target_entity'),
             'predicate_truths': predicate_truths,
             'selector_registry': state.get('selector_registry') or registry if 'registry' in locals() else state.get('selector_registry'),
+            'form_progress': form_progress,
         }
         
     except Exception as e:

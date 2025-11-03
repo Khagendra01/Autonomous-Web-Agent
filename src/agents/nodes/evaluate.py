@@ -294,17 +294,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
             'last_evaluation_fingerprint': current_fp,
         }
 
-    # Auto-complete gate
-    if all_subtasks_completed and not errors_present and not high_value_remaining:
-        if logger:
-            logger.log("Auto-eval: Complete (all sub-tasks evidenced, no blockers)", "SUCCESS")
-        return {
-            'goal_reached': True,
-            'sub_tasks': sub_tasks,
-            'current_sub_task_index': len(sub_tasks),
-            'last_evaluated_step': step_now,
-            'last_evaluation_fingerprint': current_fp,
-        }
+    # Removed auto-complete gate: always proceed to LLM evaluation to confirm completion
     
     # Create compact UI state summary instead of sending full interactable list
     # (Full list already sent in scoring node, no need to duplicate)
@@ -466,6 +456,34 @@ Return ONLY valid JSON:
     except Exception:
         confidence = 0.5
     missing_steps = result.get('missing_steps', []) or []
+
+    # Deterministic guardrails: prevent premature success without in-form evidence
+    try:
+        recent_actions = (state.get('action_history') or [])[-8:]
+        # Identify last context-opening click (create/new/add/open/edit/message)
+        last_ctx_idx = -1
+        for i in range(len(recent_actions) - 1, -1, -1):
+            act = recent_actions[i]
+            if (act.get('type') == 'click') and any(t in (act.get('label','').lower()) for t in ['create','new','add','open','edit','message','compose']):
+                last_ctx_idx = i
+                break
+        typed_since_ctx = False
+        selected_since_ctx = False
+        if last_ctx_idx != -1:
+            for j in range(last_ctx_idx + 1, len(recent_actions)):
+                a = recent_actions[j]
+                if a.get('type') == 'type':
+                    typed_since_ctx = True
+                # Option selection shows as click on role=option; we only have label here
+                if a.get('type') == 'click' and any(k in (a.get('label','').lower()) for k in ['option','assignee','priority','status','label','project']):
+                    selected_since_ctx = True
+        # If LLM returned success but no evidence of typing/selection after opening a form/menu, override to False
+        if goal_reached and last_ctx_idx != -1 and not (typed_since_ctx or selected_since_ctx):
+            goal_reached = False
+            if 'Ensure in-form actions before submit' not in missing_steps:
+                missing_steps = ['Ensure in-form actions before submit'] + missing_steps
+    except Exception:
+        pass
     
     # Debug: Log raw LLM response for sub-task completions
     sub_task_completions = result.get('sub_task_completions', [])

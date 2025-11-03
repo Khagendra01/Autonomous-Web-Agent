@@ -9,6 +9,47 @@ from .common import client
 from ..knowledge.roles import ACTIONABLE_ROLES
 
 
+def _summarize_instruction(text: str, max_len: int = 80) -> str:
+    s = (text or "").strip().splitlines()[0]
+    return (s[:max_len]).strip()
+
+
+def _count_textboxes(items: List[Dict[str, Any]]) -> int:
+    count = 0
+    for e in items:
+        role = (e.get('role') or '').lower()
+        if role in ('textbox', 'searchbox'):
+            count += 1
+        elif role == 'combobox' and (e.get('placeholder') or e.get('label')):
+            count += 1
+    return count
+
+
+def _synthesize_type_candidates(
+    interactables: List[Dict[str, Any]], text: str, max_inputs: int = 2
+) -> List[Dict[str, Any]]:
+    """Produce generic type candidates for visible inputs in active form context."""
+    candidates: List[Dict[str, Any]] = []
+    for e in interactables:
+        if len(candidates) >= max_inputs:
+            break
+        role = (e.get('role') or '').lower()
+        if role in ('textbox', 'searchbox', 'combobox'):
+            sel = e.get('selector') or ''
+            if not sel:
+                continue
+            label = e.get('label') or e.get('placeholder') or 'Input'
+            candidates.append({
+                'action_type': 'type',
+                'selector': sel,
+                'label': label,
+                'text': text,
+                'score': 8.8,
+                'reasoning': 'Fill visible input in active form context'
+            })
+    return candidates
+
+
 def _filter_empty_fields(element: Dict[str, Any]) -> Dict[str, Any]:
     """Filter out empty fields from an interactable element to reduce payload size.
     
@@ -628,6 +669,70 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
             current_sub_task = sub_tasks[current_sub_task_idx]
         incomplete_sub_tasks = [t for t in sub_tasks if t.get('status') != 'completed']
 
+    # Stage 1.1: Opportunistic typing in active form contexts (generic, app-agnostic)
+    active_ctx = state.get('active_context') or {}
+    ctx_type = (active_ctx.get('type') or '').lower()
+    is_form_ctx = (ctx_type in ('form', 'active_context'))
+    # Prefer using full list for surge signal if available
+    interactables_all = state.get('interactable_elements_all') or interactables_full
+    textbox_count = _count_textboxes(interactables_all)
+    try:
+        prev_textbox_count = int(state.get('prev_textbox_count') or 0)
+    except Exception:
+        prev_textbox_count = 0
+    textbox_surge = textbox_count > max(1, prev_textbox_count)
+    state['prev_textbox_count'] = textbox_count
+
+    should_offer_typing = (textbox_count > 0) and (is_form_ctx or textbox_surge)
+    recent_actions = state.get('action_history') or []
+    recent_typed = any(a.get('type') == 'type' for a in recent_actions[-3:])
+
+    synthetic_scored: List[ScoredAction] = []
+    if should_offer_typing and not recent_typed:
+        planned_text = _summarize_instruction(state.get('instruction') or state.get('goal') or '')
+        if planned_text:
+            try:
+                synthetic_actions = _synthesize_type_candidates(interactables_full, text=planned_text, max_inputs=2)
+                for a in synthetic_actions:
+                    try:
+                        synthetic_scored.append(
+                            ScoredAction(
+                                action_type=a['action_type'],
+                                selector=a['selector'],
+                                label=a.get('label') or 'Input',
+                                score=float(a.get('score') or 8.5),
+                                reasoning=a.get('reasoning') or 'Fill input',
+                                text=a.get('text'),
+                            )
+                        )
+                    except Exception:
+                        continue
+            except Exception:
+                synthetic_scored = []
+
+    # Short-circuit: if we have a clear typing candidate and little else, take it
+    if synthetic_scored:
+        try:
+            top_syn = max(synthetic_scored, key=lambda a: a.score or 0.0)
+            # If pre-ranked selection is empty or clearly weaker than typing, prefer typing now
+            rest_best = 0.0
+            try:
+                rest_best = max([0.0] + [float(_salience(e)) for e in interactables])
+            except Exception:
+                rest_best = 0.0
+            if (not interactables) or ((top_syn.score or 0.0) >= rest_best + 2.0):
+                if logger:
+                    logger.log("Short-circuit: selecting synthetic type action", "INFO")
+                adjusted = [top_syn]
+                return {
+                    'scored_actions': adjusted,
+                    'next_action': None,
+                    'last_scoring_fingerprint': current_fp,
+                    'last_scored_step': step,
+                }
+        except Exception:
+            pass
+
     # Stage 1.5: Build compact top-K for LLM re-ranker
     # Compose candidates with very short keys
     def _candidate_of(e: Dict[str, Any]) -> Dict[str, Any]:
@@ -640,7 +745,80 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
 
     # Pre-score with salience and take top of global list
     global_sorted = sorted(interactables, key=_salience, reverse=True)
-    shortlist = _mmr(global_sorted, top_k * 2)[:top_k]
+
+    # Guard against instruction-derived hallucinated selectors: drop elems whose
+    # label/selector largely mirrors the full instruction text
+    instruction_text = (state.get('instruction') or state.get('goal') or '')
+    instruction_l = instruction_text.lower().strip()
+    def _looks_instruction_derived(e: Dict[str, Any]) -> bool:
+        try:
+            lbl = (e.get('label') or '').lower()
+            sel = (e.get('selector') or '').lower()
+            # If selector embeds a very long name segment from instruction, reject
+            if instruction_l and ('role=' in sel) and ('[name="' in sel):
+                name_part = sel.split('[name="')[-1].split('"]')[0]
+                name_l = name_part.lower()
+                # Consider suspicious if substantial overlap with instruction
+                overlap = sum(1 for t in instruction_l.split() if len(t) >= 4 and t in name_l)
+                if overlap >= 6 or len(name_l) > 80:
+                    return True
+            # Extremely long labels mirroring instruction are suspicious
+            if instruction_l and len(lbl) > 80:
+                overlap_lbl = sum(1 for t in instruction_l.split() if len(t) >= 4 and t in lbl)
+                if overlap_lbl >= 6:
+                    return True
+        except Exception:
+            return False
+        return False
+
+    filtered_for_shortlist = [e for e in global_sorted if not _looks_instruction_derived(e)]
+
+    # Non-starvation quotas: always reserve input slots in shortlist
+    inputs_pool = [e for e in filtered_for_shortlist if (e.get('role') or '').lower() in ('textbox', 'combobox')]
+    submits_pool = [e for e in filtered_for_shortlist if (e.get('role') or '').lower() in ('button','link') and any(t in (e.get('label') or '').lower() for t in ['create','submit','save','send','confirm','done','finish','post'])]
+
+    # Compute form readiness early using full observation
+    try:
+        form_ready = False
+        interactables_all = state.get('interactable_elements_all') or interactables_full
+        if any((e.get('role') or '').lower() in ('textbox','combobox') for e in interactables_all):
+            form_ready = True
+    except Exception:
+        form_ready = False
+    form_progress = int(state.get('form_progress') or 0)
+
+    # Exclude disabled submits and premature submits when no form progress yet
+    effective_submits_pool: List[Dict[str, Any]] = []
+    for e in submits_pool:
+        try:
+            if bool(e.get('disabled', False)):
+                continue
+            if form_ready and form_progress <= 0:
+                # Skip submits entirely until some in-form action occurs
+                continue
+            effective_submits_pool.append(e)
+        except Exception:
+            continue
+
+    # Build shortlist: reserve inputs, then allowed submits, then fill with remaining
+    reserved_inputs = inputs_pool[:max(5, min(8, top_k//2))]
+    reserved_submits = effective_submits_pool[:max(1, min(2, top_k//6))]
+
+    remainder_candidates: List[Dict[str, Any]] = []
+    seen = set()
+    def _mark(e: Dict[str, Any]):
+        key = (e.get('selector') or '') + '|' + (e.get('role') or '')
+        seen.add(key)
+    for e in reserved_inputs + reserved_submits:
+        _mark(e)
+    for e in filtered_for_shortlist:
+        key = (e.get('selector') or '') + '|' + (e.get('role') or '')
+        if key in seen:
+            continue
+        remainder_candidates.append(e)
+
+    shortlist_raw = (reserved_inputs + reserved_submits + remainder_candidates)
+    shortlist = _mmr(shortlist_raw, top_k * 2)[:top_k]
     compact_candidates = [{ 'i': i, **_candidate_of(e) } for i, e in enumerate(shortlist)]
 
     if logger:
@@ -704,6 +882,13 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         inferred_type = 'click'
         if role in ['textbox', 'combobox']:
             inferred_type = 'type'
+        # Attach text for type actions using the same summarizer logic as synthetic path
+        planned_text_llm = None
+        try:
+            if inferred_type == 'type':
+                planned_text_llm = _summarize_instruction(state.get('instruction') or state.get('goal') or '')
+        except Exception:
+            planned_text_llm = None
         parsed_actions = [
             ScoredAction(
                 action_type=inferred_type,
@@ -711,7 +896,7 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
                 label=str(chosen_elem.get('label') or ''),
                 score=9.0,
                 reasoning=reason or 'Chosen by compact re-ranker',
-                text=None,
+                text=planned_text_llm,
             )
         ]
     else:
@@ -783,6 +968,27 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
                     continue
     except Exception:
         pass
+
+    # Post-process: Temporarily demote submit/confirm until in-form progress occurs
+    try:
+        form_ready = bool(is_form_ctx or textbox_surge)
+    except Exception:
+        form_ready = False
+    form_progress = int(state.get('form_progress') or 0)
+    if form_ready and form_progress <= 0:
+        submit_terms = ['create', 'submit', 'save', 'confirm', 'done', 'post']
+        for action in parsed_actions:
+            try:
+                if action.action_type != 'click':
+                    continue
+                lbl = (action.label or '').lower()
+                if any(t in lbl for t in submit_terms):
+                    # Cap submits to avoid outranking inputs before any form interaction
+                    if action.score > 6.0:
+                        action.score = 6.0
+                        action.reasoning = f"[FORM READINESS GATING] {action.reasoning} Submit temporarily demoted until at least one in-form action occurs."
+            except Exception:
+                continue
 
     # Post-process: Generic prerequisite gating signal for commit-like actions when requirements unmet
     reqs = state.get('requirements') or {}

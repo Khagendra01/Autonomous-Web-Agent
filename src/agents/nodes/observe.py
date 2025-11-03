@@ -145,6 +145,22 @@ def _delta_prune(
         pruned += unchanged[:take]
         unchanged_added = take
 
+    # Preserve some inputs if space remains
+    if len(pruned) < hard_cap:
+        input_candidates = [e for e in all_interactables if (e.get('role') or '').lower() in ('textbox', 'searchbox')]
+        if input_candidates:
+            need = min(3, hard_cap - len(pruned))
+            # append first few inputs not already included
+            existing_ids = {id(x) for x in pruned}
+            added = 0
+            for e in input_candidates:
+                if id(e) in existing_ids:
+                    continue
+                pruned.append(e)
+                added += 1
+                if added >= need:
+                    break
+
     if not pruned:
         pruned = all_interactables[:hard_cap]
 
