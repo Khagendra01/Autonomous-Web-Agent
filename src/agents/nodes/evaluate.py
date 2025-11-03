@@ -210,22 +210,25 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
                 task['status'] = 'completed'
     recent_actions = (state.get('action_history') or [])[-10:]
 
-    # Normalize action details for evaluation (include URL for context verification)
+    # Normalize action details (compact) for evaluation (include URL for context verification)
     action_details: List[Dict[str, Any]] = []
-    for a in recent_actions:
+    for a in recent_actions[-5:]:
         action_details.append({
-            'type': a.get('type', ''),
-            'label': a.get('label', ''),
-            'text': a.get('text', ''),
-            'score': a.get('score', 0),
-            'reasoning': a.get('reasoning', ''),
-            'url': a.get('url', ''),  # CRITICAL: Include URL where action occurred for context verification
+            't': a.get('type', ''),
+            'l': a.get('label', ''),
+            'u': a.get('url', ''),
         })
 
-    last_action = action_details[-1] if action_details else None
-    if last_action:
-        text_part = f" with text '{last_action['text']}'" if last_action.get('text') else ""
-        print(f"  Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
+    # For last_action in hints, build from original detailed last entry if present
+    last_action = None
+    if recent_actions:
+        last_raw = recent_actions[-1]
+        last_action = {
+            'type': last_raw.get('type', ''),
+            'label': last_raw.get('label', ''),
+            'url': last_raw.get('url', ''),
+        }
+        print(f"  Last action: {last_action['type']} on '{last_action['label']}'")
 
     # Build dynamic context hints (Option 6)
     dynamic_hints = _build_dynamic_evaluation_context(state, last_action)
@@ -237,8 +240,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
     if sub_tasks:
         sub_tasks = _update_sub_task_evidence(sub_tasks, recent_actions, state.get('current_url', ''))
     
-    # Get currently available scored actions from the scoring node
-    # These represent actions that the scoring system identified as high-value for the goal
+    # Get currently available scored actions from the scoring node (high-value next steps)
     scored_actions = state.get('scored_actions') or []
     available_high_scoring_actions = []
     
@@ -259,9 +261,50 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
                 'label': scored_action.label,
                 'selector': scored_action.selector,
                 'score': scored_action.score,
-                'reasoning': scored_action.reasoning,
-                'text': scored_action.text,
             })
+    
+    # Deterministic gates
+    errors_present = bool(state.get('errors'))
+    high_value_remaining = any((a.get('score') or 0) >= 8 for a in available_high_scoring_actions)
+    all_subtasks_completed = bool(sub_tasks) and all(t.get('status') == 'completed' or (t.get('evidence') and len(t.get('evidence')) > 0) for t in sub_tasks)
+    
+    # Fingerprint-based reuse: if fingerprint unchanged and no high-value actions remain, reuse prior decision
+    current_fp = state.get('interactable_fingerprint') or ""
+    last_eval_fp = state.get('last_evaluation_fingerprint') or ""
+    if current_fp and last_eval_fp and current_fp == last_eval_fp and not high_value_remaining:
+        if logger:
+            logger.log("Evaluation skipped (fingerprint unchanged, no high-value actions)", "INFO")
+        return {
+            'goal_reached': bool(state.get('goal_reached', False)),
+            'sub_tasks': sub_tasks,
+            'current_sub_task_index': int(state.get('current_sub_task_index', 0)),
+            'last_evaluated_step': step_now,
+            'last_evaluation_fingerprint': current_fp,
+        }
+
+    # Auto-incomplete gate
+    if errors_present or high_value_remaining:
+        if logger:
+            logger.log("Auto-eval: Incomplete (errors present or high-scoring actions remain)", "INFO")
+        return {
+            'goal_reached': False,
+            'sub_tasks': sub_tasks,
+            'current_sub_task_index': state.get('current_sub_task_index', 0),
+            'last_evaluated_step': step_now,
+            'last_evaluation_fingerprint': current_fp,
+        }
+
+    # Auto-complete gate
+    if all_subtasks_completed and not errors_present and not high_value_remaining:
+        if logger:
+            logger.log("Auto-eval: Complete (all sub-tasks evidenced, no blockers)", "SUCCESS")
+        return {
+            'goal_reached': True,
+            'sub_tasks': sub_tasks,
+            'current_sub_task_index': len(sub_tasks),
+            'last_evaluated_step': step_now,
+            'last_evaluation_fingerprint': current_fp,
+        }
     
     # Create compact UI state summary instead of sending full interactable list
     # (Full list already sent in scoring node, no need to duplicate)
@@ -286,7 +329,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
         ui_state_summary = {
             'total_elements': len(interactables_full),
             'elements_by_role': role_counts,
-            'submit_buttons': submit_buttons[:5] if submit_buttons else []  # Limit to top 5
+            'submit_buttons': submit_buttons[:2] if submit_buttons else []
         }
 
     # Build conditional sections
@@ -299,14 +342,6 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
     
     step4_incomplete_1 = "Any sub-task has status != 'completed' OR evidence doesn't match required_context OR verification_patterns not satisfied" if sub_tasks else "Any required sub-task lacks evidence in action history"
     step4_incomplete_4 = "4. Context mismatch detected (e.g., filter operation attempted on detail_view instead of list_view)\n" if sub_tasks else ""
-    
-    # Build sub_task_completions JSON template separately to avoid f-string brace escaping issues
-    # CRITICAL: Make this REQUIRED not optional - LLM must return this
-    if sub_tasks:
-        task_ids_list = ', '.join([f'"{task.get("id", f"task_{i+1}")}"' for i, task in enumerate(sub_tasks)])
-        sub_task_completions_template = f',\n  "sub_task_completions": [{{"id": "task_1", "completed": true/false, "reason": "brief explanation"}}, ...]\nREQUIRED: Return completion status for ALL {len(sub_tasks)} sub-tasks with IDs: [{task_ids_list}]'
-    else:
-        sub_task_completions_template = ""
     
     # Build LAST ACTION pattern match check section for sub-tasks
     last_action_check = ""
@@ -349,9 +384,9 @@ This action MATCHES verification patterns for the following sub-task(s):
 
 """
     
-    # Build structured prompt with clear sections (Option 2)
+    # Build structured prompt (compact sections)
     prompt = f"""# ROLE & OBJECTIVE
-You are an autonomous web agent's evaluation module. Your task is to assess whether the user's goal has been completed based on action history, current UI state, goal alignment, and available next actions.
+You are an autonomous web agent's evaluation module. Assess whether the user's goal has been completed based on compact action history, current UI state, goal alignment, and high-scoring remaining actions.
 
 # CONTEXT
 Goal: {state.get('goal', '')}
@@ -362,97 +397,53 @@ Steps Taken: {state.get('step_count', 0)}
 Errors/Validation Issues:
 {json.dumps(state.get('errors', [])) if state.get('errors') else "None"}
 
-{last_action_check}{"## DYNAMIC CONTEXT HINTS\n" + dynamic_hints + "\n" if dynamic_hints else ""}# ACTION HISTORY
-
-Most Recent Action:
-{json.dumps(last_action) if last_action else "None"}
-
-Complete Action History (chronological, last 10):
+{last_action_check}{"## DYNAMIC CONTEXT HINTS\n" + dynamic_hints + "\n" if dynamic_hints else ""}# ACTION HISTORY (compact, last 5)
+Keys: t=type, l=label, u=url
 {json.dumps(action_details)}
 
 # AVAILABLE HIGH-SCORING ACTIONS (NOT YET EXECUTED)
-These are actions that the scoring system identified as valuable for achieving the goal. If high-scoring actions (8+) remain that align with the goal, the task is likely incomplete:
-{json.dumps(available_high_scoring_actions) if available_high_scoring_actions else "None - all scored actions have been executed or no actions available"}
+If high-scoring actions (8+) remain that align with the goal, the task is likely incomplete:
+{json.dumps(available_high_scoring_actions) if available_high_scoring_actions else "None"}
 
-# CURRENT UI STATE
-UI State Summary:
+# CURRENT UI STATE (compact)
 {json.dumps(ui_state_summary) if ui_state_summary else "No interactable elements available"}
 
 {_build_sub_task_verification_section(sub_tasks) if sub_tasks else ""}# EVALUATION METHODOLOGY
 
 ## Step 1: Parse Goal Requirements
-{step1_intro}Analyze the goal and instruction to identify ALL required sub-tasks/components. For example:
-- "create a new project called Softlight" → requires: [open project creation, enter name "Softlight", submit/create the project]
-- "create issue and assign to kgen" → requires: [create issue, assign to kgen]
-- "change name to kgen" → requires: [navigate to profile/settings, change name field to "kgen", save changes]
+{step1_intro}Identify ALL required sub-tasks/components.
 
 ## Step 2: Verify Action History Against Requirements
 {step2_intro}
 
 ## Step 3: Check for Remaining High-Scoring Actions
 If there are available high-scoring actions (score 8+) that:
-- Have NOT been executed yet (check against action history)
+- Have NOT been executed yet
 - Align with the goal or incomplete sub-tasks
-- Then the task is likely INCOMPLETE - these represent obvious next steps that should be taken
-
-For example:
-- If goal requires "create project" and there's a [10.0] "Create project" button visible and not clicked → INCOMPLETE
-- If goal requires "assign to kgen" and there's a [9.0] "Change assignee" action not taken → INCOMPLETE
-- If high-scoring actions are present but seem unrelated to remaining goal requirements → may still be complete
+- Then the task is likely INCOMPLETE
 
 ## Step 4: Completion Decision
 Task is COMPLETE only if:
 1. {step4_complete_1}
 2. No high-scoring actions (8+) remain that align with incomplete sub-tasks
 3. No validation errors present
-4. The workflow logically suggests completion (not mid-process)
+4. The workflow logically suggests completion
 {step4_complete_5}Task is INCOMPLETE if:
 1. {step4_incomplete_1}
 2. High-scoring actions (8+) exist that align with remaining goal requirements
-3. The workflow appears mid-process (e.g., form filled but not submitted, dropdown opened but not selected)
+3. The workflow appears mid-process
 {step4_incomplete_4}
-
-## Auto-Save vs Explicit Submission (IMPORTANT)
-- Many modern apps auto-save: absence of explicit submit does not always imply incompletion
-- However, if a high-scoring submit/create button (8+) is visible and aligns with the goal, it typically needs to be clicked
-- If the goal explicitly requires "create" or "submit" something, and a high-scoring action for that exists, do not assume auto-save
-- Balance pragmatism with completeness - err toward requiring obvious final actions when they're highly scored and goal-aligned
-
-## Confidence Levels
-- 0.9-1.0 = Very confident: All sub-tasks complete, no high-scoring actions remain, clear completion signals
-- 0.7-0.89 = Confident: Strong evidence but minor uncertainties
-- 0.5-0.69 = Moderate: Some evidence but significant uncertainty (likely incomplete)
-- 0.0-0.49 = Low: Insufficient evidence or contradictory signals (definitely incomplete)
-
-## Rationale Requirements
-- Explicitly list the parsed sub-tasks from the goal
-- Reference specific actions that provide evidence for each sub-task
-- If incomplete, identify which sub-tasks are missing and what high-scoring actions address them
-- Be specific, not generic
-
-{"## SUB-TASK COMPLETION EVALUATION (CRITICAL - MANDATORY)" + chr(10) + "You MUST evaluate EACH sub-task individually. Mark sub-task as COMPLETED based on pattern matching against its own verification criteria." if sub_tasks else ""}
-{"### Completion Detection (Pattern Matching):" if sub_tasks else ""}
-{"For each sub-task, check:" if sub_tasks else ""}
-{"1. Do actions in action history contain labels/patterns matching the sub-task's verification_patterns? (case-insensitive, partial matches count)" if sub_tasks else ""}
-{"2. Did those matching actions occur in the sub-task's required_context? (check 'url' field in action history - list_view, detail_view, etc.)" if sub_tasks else ""}
-{"3. If both conditions met → MARK COMPLETE immediately. No visual proof needed - the action sequence IS the evidence." if sub_tasks else ""}
-{"### General Completion Logic:" if sub_tasks else ""}
-{"- Each sub-task has its own verification_patterns that were designed to identify completion" if sub_tasks else ""}
-{"- If actions match those patterns AND happened in required_context → the sub-task is done" if sub_tasks else ""}
-{"- DO NOT require seeing the result/state change - executing the matching actions is sufficient" if sub_tasks else ""}
-{"- DO NOT say 'evidence does not confirm' if patterns match - trust the pattern matching" if sub_tasks else ""}
-{"CRITICAL: You MUST return sub_task_completions array with completion status for ALL sub-tasks. Missing this field means sub-tasks never complete!" if sub_tasks else ""}
 
 # OUTPUT FORMAT
 Return ONLY valid JSON:
 {{
   "goal_reached": true/false,
-  "reasoning": "2-4 sentence evidence-based explanation. First, list the parsed sub-tasks. Then verify each against action history. Then check if high-scoring actions remain for incomplete sub-tasks.",
+  "reasoning": "2-4 sentences explaining evidence and remaining steps",
   "confidence": 0.0-1.0,
-  "missing_steps": ["specific next steps if not complete, or empty array if complete"]{sub_task_completions_template}
+  "missing_steps": ["next steps if not complete"]{',\n  "sub_task_completions": [{"id":"task_1","completed":true/false,"reason":"..."} ...]' if sub_tasks else ''}
 }}"""
 
-    system_message = """You are an autonomous web agent's evaluation module. Your role is to assess task completion based on action history, UI state, and goal alignment. You must be balanced: neither over-cautious nor premature in declaring completion. Return only valid JSON following the specified format."""
+    system_message = """You are an autonomous web agent's evaluation module. Be balanced: neither over-cautious nor premature. Return only valid JSON following the specified format."""
     
     try:
         response = client.chat.completions.create(
@@ -488,24 +479,18 @@ Return ONLY valid JSON:
     
     # Process sub-task completions from LLM evaluation (LLM-driven) with persisted-outcome guardrails
     if sub_tasks and sub_task_completions:
-        # LLM explicitly marked sub-tasks as complete - update their status
         completion_map = {stc.get('id'): stc for stc in sub_task_completions}
         for task in sub_tasks:
             task_id = task.get('id', '')
             if task_id in completion_map:
                 llm_decision = completion_map[task_id]
                 if llm_decision.get('completed', False):
-                    # Persisted-outcome check: require at least one strong signal
-                    # 1) URL shows entity detail (e.g., /issue/<ID>/) OR
-                    # 2) Action history contains confirming label (e.g., 'Currently kgen is assigned', 'Done')
-                    # 3) For filter tasks, the UI state may show fewer elements; skip strict check for now
                     strong_signal = False
                     try:
                         url_now = (state.get('current_url') or '').lower()
                         if any(p in url_now for p in ['/issue/', '/task/', '/project/']):
                             strong_signal = True
                         else:
-                            # scan recent action labels for confirmations
                             for a in recent_actions[::-1]:
                                 lbl = (a.get('label') or '').lower()
                                 if any(t in lbl for t in ['currently kgen is assigned', 'done', 'completed', 'status updated']):
@@ -519,13 +504,10 @@ Return ONLY valid JSON:
                         if logger:
                             logger.log(f"Sub-task '{task.get('description', '')}' marked complete: {completion_reason}", "SUCCESS")
                     else:
-                        # Defer marking complete until we observe a persisted signal
                         if logger:
                             logger.log(f"Deferring completion for '{task.get('description', '')}' pending persisted signal", "INFO")
                 else:
-                    # LLM explicitly says not complete - ensure status reflects this
                     if task.get('status') == 'completed':
-                        # Revert if incorrectly marked
                         task['status'] = 'pending'
     
     # If goal is reached, mark all remaining sub-tasks as complete
@@ -565,6 +547,7 @@ Return ONLY valid JSON:
         'sub_tasks': sub_tasks,
         'current_sub_task_index': updated_sub_task_index,
         'last_evaluated_step': step_now,
+        'last_evaluation_fingerprint': state.get('interactable_fingerprint') or "",
     }
 
 

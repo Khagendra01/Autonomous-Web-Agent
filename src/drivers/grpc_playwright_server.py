@@ -99,7 +99,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             user_dir = Path('chrome-user')
             user_dir.mkdir(exist_ok=True)
             headless_env = str(os.environ.get('HEADLESS') or '').strip().lower()
-            headless_default = True
+            headless_default = False
             headless_flag = headless_default if headless_env == '' else (headless_env in ['1', 'true', 'yes', 'on'])
             _context = _pw.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),

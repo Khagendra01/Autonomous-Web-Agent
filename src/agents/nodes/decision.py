@@ -110,7 +110,7 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
 
     # Configurable parameters with safe defaults
     model_name = state.get('llm_model') or "gpt-4.1"
-    max_candidates = int(state.get('decision_max_candidates') or 15)
+    max_candidates = int(state.get('decision_max_candidates') or 12)
 
     # Filter out actions already tried on this URL to reduce loops
     current_url = state.get('current_url') or ''
@@ -163,7 +163,35 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
             logger.log("No candidates available after filtering", "WARNING")
         return { 'next_action': state.get('next_action') }
 
-    candidates = _serialize_candidates(base_list, max_candidates)
+    # Short-circuit when trivial
+    if len(base_list) == 1:
+        only = base_list[0]
+        if logger:
+            logger.log("Only one candidate available; selecting without LLM", "INFO")
+        return { 'next_action': only }
+    try:
+        sorted_by_score = sorted(base_list, key=lambda a: float(a.score or 0.0), reverse=True)
+        if len(sorted_by_score) >= 2 and (float(sorted_by_score[0].score or 0.0) - float(sorted_by_score[1].score or 0.0) >= 2.5):
+            if logger:
+                logger.log("Top candidate has clear lead (>=2.5); selecting without LLM", "INFO")
+            return { 'next_action': sorted_by_score[0] }
+    except Exception:
+        pass
+
+    # Compact candidates with short keys (for prompt)
+    compact_candidates = [
+        {
+            'i': i,
+            'r': (a.action_type or '')[:12],
+            'l': (a.label or '')[:60],
+            's': a.selector or '',
+            'd': False,
+            'k': float(a.score or 0.0),
+        }
+        for i, a in enumerate(base_list[:max_candidates])
+    ]
+    # Verbose candidates for dynamic hints (keeps expected keys like 'label', 'score')
+    verbose_candidates = _serialize_candidates(base_list, max_candidates)
 
     recent = (state.get('action_history') or [])[-5:]
     errors = state.get('errors') or []
@@ -172,77 +200,23 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     current_url_str = state.get('current_url') or ''
     step_count = state.get('step_count', 0)
 
-    # Build dynamic context hints (Option 6)
-    dynamic_hints = _build_dynamic_decision_context(state, candidates)
+    # Build dynamic context hints with verbose schema
+    dynamic_hints = _build_dynamic_decision_context(state, verbose_candidates)
 
-    # Build structured prompt with clear sections (Option 2)
-    prompt = f"""# ROLE & OBJECTIVE
-You are an autonomous web agent's decision module. Your task is to select the single best next UI action from scored candidates to advance toward the user's goal.
+    # Build compact prompt with legend for keys
+    compact_recent = json.dumps(recent[-3:]) if recent else "None"
+    compact_errors = ", ".join(errors[:2]) if errors else "None"
+    prompt = (
+        "GOAL: " + (goal[:160]) + "\n" +
+        "URL: " + (current_url_str[:140]) + "\n" +
+        ("HINTS:\n" + dynamic_hints + "\n" if dynamic_hints else "") +
+        "ERRORS: " + compact_errors + "\n" +
+        "RECENT: " + compact_recent + "\n" +
+        "CANDIDATES (keys: i=index, r=action_type, l=label, s=selector, d=disabled, k=score): " + json.dumps(compact_candidates) + "\n" +
+        "Pick best index 'i'. Return JSON {\"i\": <index>, \"reason\": \"...\"}."
+    )
 
-# CONTEXT
-Goal: {goal}
-Instruction: {instruction}
-Current URL: {current_url_str}
-Step Count: {step_count}
-
-Errors/Validation Issues:
-{json.dumps(errors) if errors else "None"}
-
-Recent Actions (last 5):
-{json.dumps(recent) if recent else "None"}
-
-{"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
-# CANDIDATE ACTIONS
-Select one candidate by its index 'i':
-{json.dumps(candidates)}
-
-# DECISION PRINCIPLES
-
-## Score Guidance (Important):
-- When scores differ significantly (≥3 points), prefer higher-scored candidates unless there's a BLOCKING reason (disabled, validation error)
-- When scores are close (within 2 points), use reasoning about goal alignment, context, and feasibility to choose
-- Scores represent LLM assessment - consider them but apply judgment for edge cases
-- If high-scored action is blocked/disabled, find the enabling action instead
-
-## Goal Advancement (CRITICAL)
-- Prefer actions that clearly advance the stated goal
-- Consider how each candidate's score and reasoning relate to the goal
-- If multiple high-scoring options exist, choose the one with clearest goal alignment
-
-## Error Resolution (CRITICAL)
-- If validation or error signals exist, prioritize resolving them (see Dynamic Context Hints)
-- Avoid actions blocked by validation errors
-- Error resolution typically takes precedence over goal progression
-
-## Disabled Actions (CRITICAL)
-- NEVER select disabled Submit/Send buttons - they cannot be clicked
-- If submit button is disabled, find the enabling action (e.g., selecting dropdown option, filling required field)
-- Look for validation steps that enable the submit button (see Dynamic Context Hints for combobox validation workflow)
-- Only select disabled actions if they are the ONLY available option and there's no enabling action
-
-## Efficiency & Avoidance (IMPORTANT)
-- Avoid repeating ineffective recent actions
-- Prioritize goal-directed actions over exploration
-
-## Rationale Quality (IMPORTANT)
-- Be honest about candidate quality in your rationale
-- Explain why the chosen action is best given current context
-- If all candidates are weak, acknowledge this and choose the least risky option
-
-## Text Override Guidance
-- For type actions, you may override the suggested text if you have a better value
-- Use textOverride only when you're confident the override improves goal progress
-- Leave textOverride as null if the candidate's original text is appropriate
-
-# OUTPUT FORMAT
-Return ONLY valid JSON:
-{{
-  "i": <candidate index (0-based)>,
-  "rationale": "2-3 sentence explanation of why this action is best",
-  "textOverride": "optional text for type actions, or null"
-}}"""
-
-    system_message = """You are an autonomous web agent's decision module. Your role is to select the optimal next UI action from scored candidates. You must make principled decisions based on goal alignment, error resolution priorities, and efficiency. Return only valid JSON following the specified format."""
+    system_message = "Select the best next UI action index from compact candidates to advance the goal. Return only JSON with keys i and reason."
     
     try:
         response = client.chat.completions.create(
@@ -264,29 +238,18 @@ Return ONLY valid JSON:
         idx = int(decision.get('i', 0))
     except Exception:
         idx = 0
-    rationale = (decision.get('rationale') or '').strip()
-    text_override = decision.get('textOverride')
+    rationale = (decision.get('reason') or decision.get('rationale') or '').strip()
 
-    if 0 <= idx < len(candidates) and idx < len(base_list):
+    if 0 <= idx < len(base_list):
         chosen = base_list[idx]
-        if chosen.action_type == 'type' and text_override is not None:
-            chosen = ScoredAction(
-                action_type=chosen.action_type,
-                selector=chosen.selector,
-                label=chosen.label,
-                score=chosen.score,
-                reasoning=rationale or chosen.reasoning,
-                text=str(text_override),
-            )
-        else:
-            chosen = ScoredAction(
-                action_type=chosen.action_type,
-                selector=chosen.selector,
-                label=chosen.label,
-                score=chosen.score,
-                reasoning=rationale or chosen.reasoning,
-                text=chosen.text,
-            )
+        chosen = ScoredAction(
+            action_type=chosen.action_type,
+            selector=chosen.selector,
+            label=chosen.label,
+            score=chosen.score,
+            reasoning=rationale or chosen.reasoning,
+            text=chosen.text,
+        )
         if logger:
             logger.log(f"Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'", "INFO")
             if rationale:

@@ -92,6 +92,10 @@ def find_aria_element(
     if original_label and original_label != normalized_label:
         labels_to_try.append(original_label)
     
+    # Heuristic: detect navigation intent from label to allow deliberate global link clicks
+    nav_terms = ['profile', 'view', 'details', 'open', 'navigate']
+    has_navigation_intent = any(t in (original_label or '').lower() for t in nav_terms)
+    
     # Build candidate list based on role
     candidates = []
     
@@ -440,19 +444,19 @@ def click_aria_element(
                     candidates.extend([
                         ctx.locator('[role="menuitem"]').filter(has_text=email_only).first,
                     ])
-            elif role == 'link':
-                if active_container:
-                    container_first_candidates.extend([
-                        active_container.locator('[role="link"]').filter(has_text=email_only).first,
-                        active_container.locator('a').filter(has_text=email_only).first,
-                    ])
-                # Email regex can cause cross-page collisions; when a container is active,
-                # only widen to global if navigation intent is explicit and compose_safe_mode is OFF
-                if (not active_container) or (has_navigation_intent and not compose_safe_mode):
-                    candidates.extend([
-                        ctx.locator('[role="link"]').filter(has_text=email_only).first,
-                        ctx.locator('a').filter(has_text=email_only).first,
-                    ])
+                elif role == 'link':
+                    if active_container:
+                        container_first_candidates.extend([
+                            active_container.locator('[role="link"]').filter(has_text=email_only).first,
+                            active_container.locator('a').filter(has_text=email_only).first,
+                        ])
+                    # Email regex can cause cross-page collisions; when a container is active,
+                    # only widen to global if navigation intent is explicit and compose_safe_mode is OFF
+                    if (not active_container) or (has_navigation_intent and not compose_safe_mode):
+                        candidates.extend([
+                            ctx.locator('[role="link"]').filter(has_text=email_only).first,
+                            ctx.locator('a').filter(has_text=email_only).first,
+                        ])
             except Exception:
                 pass
             break  # Email is same in both labels, no need to try twice

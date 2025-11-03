@@ -6,6 +6,7 @@ from ..state import AgentState, ScoredAction
 from ..utils.logger import get_logger
 from ..utils.json_parser import extract_json_array
 from .common import client
+from ..knowledge.roles import ACTIONABLE_ROLES
 
 
 def _filter_empty_fields(element: Dict[str, Any]) -> Dict[str, Any]:
@@ -355,7 +356,7 @@ def _build_dynamic_context_hints(state: AgentState, interactables: List[Dict[str
 
 
 def score_actions_node(state: AgentState) -> Dict[str, Any]:
-    """Use LLM to score which actions are most likely to advance the goal (app-agnostic)."""
+    """Two-stage scorer: deterministic pre-ranker then compact LLM re-ranker."""
     logger = get_logger()
     goal = state.get('goal', '')
     step = state.get('step_count', 0)
@@ -369,9 +370,45 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     # Configurable parameters
     model_name = state.get('llm_model') or "gpt-4.1"
     max_elements = int(state.get('scoring_max_elements') or 80)
+    top_k = int(state.get('scoring_top_k') or 15)
 
     # Prepare context for LLM – salience-based selection and stratified sampling
     interactables_full = state.get('interactable_elements') or []
+
+    # Stage 0: Hard filters (drop obviously bad)
+    def _hard_ok(e: Dict[str, Any]) -> bool:
+        try:
+            if bool(e.get('disabled', False)):
+                return False
+            # Size/visibility filters only if metadata available
+            bbox = e.get('bbox')
+            if isinstance(bbox, dict):
+                try:
+                    w = float(bbox.get('width') or 0)
+                    h = float(bbox.get('height') or 0)
+                    if w <= 1 or h <= 1:
+                        return False
+                except Exception:
+                    pass
+            op = e.get('opacity')
+            if isinstance(op, (int, float)):
+                if op < 0.1:
+                    return False
+            pe_raw = e.get('pointerEvents')
+            if isinstance(pe_raw, str) and pe_raw.lower() == 'none':
+                return False
+            # Only consider actionable roles
+            role = (e.get('role') or '').lower()
+            if role not in ACTIONABLE_ROLES:
+                return False
+            # Must have label for most roles except some inputs
+            if role not in ['textbox', 'combobox'] and not (e.get('label') or '').strip():
+                return False
+            return True
+        except Exception:
+            return False
+
+    filtered_pool = [e for e in interactables_full if _hard_ok(e)]
 
     # Heuristic salience score: enabled > role priority > goal keyword match > selector memory
     goal_text = (state.get('goal') or state.get('instruction') or '').lower()
@@ -439,9 +476,9 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Bucketize and sort by salience within each bucket
+    # Bucketize and sort by salience within each bucket (on filtered pool)
     buckets: Dict[str, List[Dict[str, Any]]] = {}
-    for e in interactables_full:
+    for e in filtered_pool:
         r = (e.get('role') or '').lower()
         buckets.setdefault(r, []).append(e)
     for r, items in buckets.items():
@@ -472,6 +509,29 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         selected.extend(rest[:remaining_cap])
 
     interactables = selected[:max_elements]
+
+    # Diversity: MMR-like pruning by label/selector to avoid near-duplicates
+    def _mmr(items: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        seen_labels: set[str] = set()
+        seen_selectors: set[str] = set()
+        for e in items:
+            lbl = (e.get('label') or '').strip().lower()
+            sel = (e.get('selector') or '').strip().lower()
+            if lbl and lbl in seen_labels:
+                continue
+            if sel and sel in seen_selectors:
+                continue
+            out.append(e)
+            if lbl:
+                seen_labels.add(lbl)
+            if sel:
+                seen_selectors.add(sel)
+            if len(out) >= limit:
+                break
+        return out
+
+    interactables = _mmr(interactables, max_elements)
 
     # Fingerprint-based cache: reuse previous scored_actions if nothing changed
     current_fp = state.get('interactable_fingerprint') or ""
@@ -568,91 +628,42 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
             current_sub_task = sub_tasks[current_sub_task_idx]
         incomplete_sub_tasks = [t for t in sub_tasks if t.get('status') != 'completed']
 
-    # Build structured prompt with clear sections (Option 2)
-    prompt = f"""# ROLE & OBJECTIVE
-You are an autonomous web agent's scoring module. Your task is to evaluate interactive UI elements and score them (0-10) based on how likely they are to help achieve the user's goal.
+    # Stage 1.5: Build compact top-K for LLM re-ranker
+    # Compose candidates with very short keys
+    def _candidate_of(e: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            'r': (e.get('role') or '')[:16],
+            'l': (e.get('label') or '')[:60],
+            's': e.get('selector') or '',
+            'd': bool(e.get('disabled', False)),
+        }
 
-# CONTEXT
-Goal: {state.get('goal', '')}
-Instruction: {state.get('instruction', '')}
-Current URL: {state.get('current_url', '')}
-Step Count: {state.get('step_count', 0)}
+    # Pre-score with salience and take top of global list
+    global_sorted = sorted(interactables, key=_salience, reverse=True)
+    shortlist = _mmr(global_sorted, top_k * 2)[:top_k]
+    compact_candidates = [{ 'i': i, **_candidate_of(e) } for i, e in enumerate(shortlist)]
 
-Recent Actions (last 5):
-{chr(10).join(history_summary) if history_summary else "None"}
+    if logger:
+        try:
+            logger.log(f"Shortlist size: {len(shortlist)} (from {len(interactables)} pre-ranked)", "DEBUG")
+            logger.log(f"Compact candidates sample: {json.dumps(compact_candidates[:3])}", "DEBUG")
+        except Exception:
+            pass
 
-{"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
-{"## SUB-TASK CONTEXT (CRITICAL - READ CAREFULLY)" + chr(10) + f"Active Sub-Task: {current_sub_task['description'] if current_sub_task else 'No sub-tasks identified'}" + chr(10) + f"Task Type: {current_sub_task['type'] if current_sub_task else 'N/A'}" + chr(10) + f"Required Context: {current_sub_task['required_context'] if current_sub_task else 'N/A'}" + chr(10) + f"Current URL: {state.get('current_url', '')}" + chr(10) + f"Context Check: Does current URL match required_context '{current_sub_task['required_context'] if current_sub_task else 'N/A'}'? Verify before scoring!" + chr(10) + chr(10) if sub_tasks else ""}
-{"## INCOMPLETE SUB-TASKS" + chr(10) + json.dumps([{"description": t['description'], "type": t['type'], "required_context": t['required_context']} for t in incomplete_sub_tasks], indent=2) + chr(10) + chr(10) if incomplete_sub_tasks else ""}
-# AVAILABLE INTERACTIVE ELEMENTS
-{json.dumps(filtered_interactables)}
+    # Build compact prompt (short keys, minimal context)
+    recent_text = chr(10).join(history_summary) if history_summary else "None"
+    subtask_line = (current_sub_task['description'] if current_sub_task else 'None')
+    prompt = (
+        "GOAL: " + (state.get('goal', '')[:160]) + "\n" +
+        "URL: " + (state.get('current_url', '')[:140]) + "\n" +
+        ("HINTS:\n" + dynamic_hints + "\n" if dynamic_hints else "") +
+        ("SUBTASK: " + subtask_line + "\n" if sub_tasks else "") +
+        "RECENT:\n" + recent_text + "\n" +
+        "CANDIDATES (short, keys: i=index, r=role, l=label, s=selector, d=disabled):\n" + json.dumps(compact_candidates) + "\n" +
+        "Pick best 'i' and provide 1-2 sentence reason. Return JSON: {\"i\": <index>, \"reason\": \"...\"}"
+    )
 
-# SCORING SCALE
-- 10 = Directly achieves the goal or is the next critical step
-- 7-9 = Very likely to progress toward the goal
-- 4-6 = Possibly useful or indirectly related
-- 0-3 = Unlikely to help or wrong direction
-
-# PRINCIPLES
-
-## Sub-Task Prioritization (CRITICAL - ENFORCE ORDER)
-{"CRITICAL: Sub-tasks must be completed in order. Violations result in severe penalties." if sub_tasks else "No sub-tasks defined - use goal alignment instead"}
-{"### Active Sub-Task Scoring:" if sub_tasks else ""}
-{"- Actions that DIRECTLY advance the ACTIVE sub-task (match type AND required_context AND verification patterns) = 9-10" if sub_tasks else ""}
-{"- Actions that match active sub-task type but wrong context (e.g., filter action on detail_view) = MAX 4 (context mismatch penalty)" if sub_tasks else ""}
-{"- Actions that skip the active sub-task to advance later sub-tasks = MAX 4 (order violation penalty)" if sub_tasks else ""}
-{"### Other Sub-Tasks:" if sub_tasks else ""}
-{"- Actions that advance prerequisites for active sub-task (e.g., navigation before filtering) = 5-6" if sub_tasks else ""}
-{"- Actions that advance any incomplete sub-task but active is incomplete = 3-4 (active sub-task not done yet)" if sub_tasks else ""}
-{"### Context Verification:" if sub_tasks else ""}
-{"- REQUIRED: Verify action context matches required_context before scoring 7+" if sub_tasks else ""}
-{"- Example: Filter sub-task requires list_view. Clicking filter on detail_view = 0-4, not 7+" if sub_tasks else ""}
-{"- Example: If active sub-task is 'filter' requiring list_view, actions on detail_view = max 4" if sub_tasks else ""}
-
-## Goal Alignment (CRITICAL)
-- Prefer elements whose labels/roles semantically match goal terms
-- Consider aria-label, placeholder, title, and visible text when matching
-- If goal requires data entry, prioritize relevant input fields
-- If submission is clearly required and ready, prioritize submission controls
-
-## Safety & Feasibility (CRITICAL)
-- Disabled elements (disabled=true) are not actionable → score 0-2
-- Prefer enabling steps before attempting disabled actions
-- If validation errors exist, prioritize actions that resolve them (see Dynamic Context Hints above)
-- If Submit/Send button is disabled, look for the enabling action (e.g., selecting dropdown option after typing in combobox) rather than clicking disabled button
-
-## Destructive Actions (CRITICAL - AVOID UNDOING PROGRESS)
-- Actions that UNDO recent progress (e.g., "Remove filter" after filtering, "Clear" after entering data) = score 0-2
-- If recent actions made progress toward the goal, destructive actions (remove/clear/delete/undo) contradict that progress → HEAVILY PENALIZE
-- Example: If goal requires "filter by inprogress" and recent action was clicking filter option → "Remove filter" button = score 0-2 (not 8-9)
-- Example: If goal requires "create project" and form was filled → "Cancel" button = score 0-2
-- Only score destructive actions highly (7+) if they explicitly help achieve the goal (e.g., "Clear form" when goal requires starting over)
-
-## Efficiency (IMPORTANT)
-- Avoid repeating recently ineffective actions
-- Prioritize goal-directed actions over exploration
-
-## Selector Requirements (CRITICAL)
-- Use a single, specific selector (no commas)
-- Prefer role-based selectors: role=button[name="…"], role=textbox[name="…"]
-- Selectors must be unique and actionable
-
-# OUTPUT FORMAT
-Return ONLY a JSON array of objects:
-[
-  {{
-    "selector": "role=button[name=\"…\"]",
-    "label": "…",
-    "action_type": "click|type|scroll",
-    "text": "optional text for type actions",
-    "score": 0-10,
-    "reasoning": "brief explanation of why this score"
-  }}
-]
-
-Ensure each scored action has a valid selector, action_type, and clear reasoning."""
-    
-    system_message = """You are an autonomous web agent's action scoring module. Your role is to evaluate UI elements and assign scores (0-10) based on their utility toward achieving the user's goal. You must return only valid JSON arrays, following the structured scoring principles provided."""
+    system_message = "Select the best next UI action index from compact candidates to advance the goal. Return only valid JSON with keys i and reason."
     
     try:
         response = client.chat.completions.create(
@@ -672,39 +683,64 @@ Ensure each scored action has a valid selector, action_type, and clear reasoning
             'error': f"Scoring LLM call failed: {e}",
         }
 
-    scored_actions_raw = extract_json_array(content) or []
-
-    parsed_actions: List[ScoredAction] = []
-    for a in scored_actions_raw:
+    if logger:
         try:
-            action_label = str(a.get('label', ''))
-            action_type = str(a.get('action_type'))
-            selector = str(a.get('selector'))
-            label = str(a.get('label', ''))
-            score = float(a.get('score', 0))
-            reasoning = str(a.get('reasoning', ''))
-            text = a.get('text')
-            
-            # Check if this is a destructive action that undoes recent progress
-            if _detect_destructive_action(action_label, action_history, goal):
-                # Heavily penalize destructive actions (cap at 2.0)
-                if score > 2.0:
-                    score = 2.0
-                    reasoning = f"[DESTRUCTIVE ACTION PENALTY] {reasoning} This action undoes recent progress toward the goal."
-            if not action_type or not selector:
-                continue
-            parsed_actions.append(
-                ScoredAction(
-                    action_type=action_type,
-                    selector=selector,
-                    label=label,
-                    score=score,
-                    reasoning=reasoning,
-                    text=text,
-                )
-            )
+            logger.log(f"Re-ranker raw content: {content[:240]}", "DEBUG")
         except Exception:
-            continue
+            pass
+
+    # Parse LLM output as a single choice; map back to candidates
+    try:
+        choice = json.loads(content)
+    except Exception:
+        choice = {}
+    idx_chosen = choice.get('i')
+    if isinstance(idx_chosen, int) and 0 <= idx_chosen < len(shortlist):
+        chosen_elem = shortlist[idx_chosen]
+        # Fabricate a ScoredAction with a high score baseline; reason captured
+        reason = str(choice.get('reason') or '').strip()
+        # Heuristic: decide action_type based on role
+        role = (chosen_elem.get('role') or '').lower()
+        inferred_type = 'click'
+        if role in ['textbox', 'combobox']:
+            inferred_type = 'type'
+        parsed_actions = [
+            ScoredAction(
+                action_type=inferred_type,
+                selector=str(chosen_elem.get('selector') or ''),
+                label=str(chosen_elem.get('label') or ''),
+                score=9.0,
+                reasoning=reason or 'Chosen by compact re-ranker',
+                text=None,
+            )
+        ]
+    else:
+        parsed_actions = []
+
+    # Fallback: if no action chosen, synthesize a small set from shortlist
+    if not parsed_actions:
+        if logger:
+            logger.log("Re-ranker returned no valid choice; synthesizing fallback actions from shortlist", "WARNING")
+        synthesized: List[ScoredAction] = []
+        for e in shortlist[:5]:
+            try:
+                role = (e.get('role') or '').lower()
+                inferred_type = 'type' if role in ['textbox', 'combobox'] else 'click'
+                synthesized.append(
+                    ScoredAction(
+                        action_type=inferred_type,
+                        selector=str(e.get('selector') or ''),
+                        label=str(e.get('label') or ''),
+                        score=float(8.0),
+                        reasoning='Synthesized from shortlist (fallback)',
+                        text=None,
+                    )
+                )
+            except Exception:
+                continue
+        parsed_actions = synthesized
+
+    # parsed_actions already constructed from the compact re-ranker choice above
     
     # Post-process: Penalize role=link when role=option exists for same label
     # This prevents clicking background links when dropdown options are available
