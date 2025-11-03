@@ -111,6 +111,13 @@ Return ONLY a JSON object with:
         'step_count': 0,
         'errors': [],
         'stuck_count': 0,
+        # Best practices additions
+        'llm_dom': None,
+        'llm_index_to_selector': None,
+        'short_term_error_memory': None,
+        'long_term_error_memory': None,
+        'max_actions_per_step': 1,  # Default: 1 action per step
+        'consecutive_empty_actions': 0,
     }
 
 

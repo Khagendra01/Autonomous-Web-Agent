@@ -10,7 +10,64 @@ from ..knowledge.roles import ACTIONABLE_ROLES
 
 
 def _summarize_instruction(text: str, max_len: int = 80) -> str:
+    """Extract meaningful text from instruction/goal for typing actions.
+    Tries to extract quoted titles (e.g., 'Make Web Agent B') from goals.
+    Also handles unquoted titles like "Write a new issue Make Web Agent B to project...".
+    """
     s = (text or "").strip().splitlines()[0]
+    import re
+    
+    # Pattern 1: Try to extract quoted title from goal (e.g., "titled 'Make Web Agent B'")
+    quoted_patterns = [
+        r"titled\s+['\"]([^'\"]+)['\"]",
+        r"title\s+['\"]([^'\"]+)['\"]",
+        r"['\"]([^'\"]{3,50})['\"]",  # Any quoted string 3-50 chars
+    ]
+    for pattern in quoted_patterns:
+        match = re.search(pattern, s, re.IGNORECASE)
+        if match:
+            extracted = match.group(1).strip()
+            if 3 <= len(extracted) <= max_len:
+                return extracted
+    
+    # Pattern 2: Extract unquoted titles from common patterns
+    # "Write a new issue Make Web Agent B to project..." -> "Make Web Agent B"
+    # "Create issue X to Y" -> "X"
+    # "Make X" -> "X"
+    unquoted_patterns = [
+        r"(?:write|create|add|make|new)\s+(?:a\s+)?(?:new\s+)?(?:issue|task|item|note|message|post)\s+(?:titled\s+)?([A-Z][^to]+?)(?:\s+to\s+|\s+in\s+|\s+project|\s+and\s+assign|$)",  # "Write a new issue Make Web Agent B to project"
+        r"(?:write|create|add|make)\s+(?:a\s+)?(?:new\s+)?([A-Z][^to]+?)(?:\s+to\s+|\s+in\s+|\s+project|\s+and\s+assign|$)",  # "Make Web Agent B to project"
+        r"issue\s+(?:titled\s+)?([A-Z][^to]+?)(?:\s+to\s+|\s+in\s+|\s+project|\s+and\s+assign|$)",  # "issue Make Web Agent B to"
+    ]
+    
+    for pattern in unquoted_patterns:
+        match = re.search(pattern, s, re.IGNORECASE)
+        if match:
+            extracted = match.group(1).strip()
+            # Clean up trailing punctuation and common words
+            extracted = re.sub(r'[,\-\.]+$', '', extracted).strip()
+            # Remove common trailing words that aren't part of the title
+            extracted = re.sub(r'\s+(to|in|project|assign|and|the)\s*$', '', extracted, flags=re.IGNORECASE).strip()
+            if 3 <= len(extracted) <= max_len:
+                return extracted
+    
+    # Pattern 3: Extract capitalized phrase after verbs (fallback for simple cases)
+    # "Create X Y Z" where X Y Z starts with capital
+    simple_pattern = r"(?:write|create|add|make|new)\s+([A-Z][A-Za-z\s]{2,30}?)(?:\s+to\s+|\s+in\s+|\s+project|\s+and\s+assign|$)"
+    match = re.search(simple_pattern, s, re.IGNORECASE)
+    if match:
+        extracted = match.group(1).strip()
+        extracted = re.sub(r'[,\-\.]+$', '', extracted).strip()
+        extracted = re.sub(r'\s+(to|in|project|assign|and|the)\s*$', '', extracted, flags=re.IGNORECASE).strip()
+        if 3 <= len(extracted) <= max_len:
+            return extracted
+    
+    # Fallback: return first line truncated (but try to avoid common instruction words)
+    fallback = (s[:max_len]).strip()
+    # Remove common instruction prefixes
+    fallback = re.sub(r'^(?:write|create|add|make|new)\s+(?:a\s+)?(?:new\s+)?(?:issue|task|item|note|message|post)\s+', '', fallback, flags=re.IGNORECASE)
+    if len(fallback.strip()) >= 3:
+        return fallback.strip()[:max_len]
     return (s[:max_len]).strip()
 
 
@@ -28,25 +85,59 @@ def _count_textboxes(items: List[Dict[str, Any]]) -> int:
 def _synthesize_type_candidates(
     interactables: List[Dict[str, Any]], text: str, max_inputs: int = 2
 ) -> List[Dict[str, Any]]:
-    """Produce generic type candidates for visible inputs in active form context."""
+    """Produce generic type candidates for visible inputs in active form context.
+    Excludes button-based comboboxes (which should be clicked, not typed into).
+    Also excludes filter/search boxes which are not issue creation fields.
+    """
     candidates: List[Dict[str, Any]] = []
+    filter_search_keywords = ['filter', 'search', 'all projects', 'all issues', 'find', 'lookup', 'query']
+    
     for e in interactables:
         if len(candidates) >= max_inputs:
             break
         role = (e.get('role') or '').lower()
-        if role in ('textbox', 'searchbox', 'combobox'):
+        tag = (e.get('tag') or '').lower()
+        label = (e.get('label') or e.get('placeholder') or '').lower()
+        
+        # Skip filter/search boxes - these are not issue creation fields
+        is_filter_field = any(kw in label for kw in filter_search_keywords)
+        if is_filter_field:
+            continue
+        
+        # Textboxes and searchboxes are typeable (but skip if they're filters)
+        if role in ('textbox', 'searchbox'):
             sel = e.get('selector') or ''
             if not sel:
                 continue
-            label = e.get('label') or e.get('placeholder') or 'Input'
+            display_label = e.get('label') or e.get('placeholder') or 'Input'
             candidates.append({
                 'action_type': 'type',
                 'selector': sel,
-                'label': label,
+                'label': display_label,
                 'text': text,
                 'score': 8.8,
                 'reasoning': 'Fill visible input in active form context'
             })
+        # Comboboxes: only include if they're searchable/typeable (not button-based)
+        elif role == 'combobox':
+            # Skip button-based comboboxes (they should be clicked, not typed)
+            if tag == 'button':
+                continue
+            # Only include if it has a placeholder indicating it's searchable
+            placeholder = (e.get('placeholder') or '').lower()
+            if any(word in placeholder for word in ['search', 'type', 'enter', 'filter']):
+                sel = e.get('selector') or ''
+                if not sel:
+                    continue
+                label = e.get('label') or e.get('placeholder') or 'Input'
+                candidates.append({
+                    'action_type': 'type',
+                    'selector': sel,
+                    'label': label,
+                    'text': text,
+                    'score': 8.8,
+                    'reasoning': 'Fill visible searchable combobox in active form context'
+                })
     return candidates
 
 
@@ -689,7 +780,8 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
 
     synthetic_scored: List[ScoredAction] = []
     if should_offer_typing and not recent_typed:
-        planned_text = _summarize_instruction(state.get('instruction') or state.get('goal') or '')
+        # Prefer goal over instruction for better structured text (goal is decomposed and may have quotes)
+        planned_text = _summarize_instruction(state.get('goal') or state.get('instruction') or '')
         if planned_text:
             try:
                 synthetic_actions = _synthesize_type_candidates(interactables_full, text=planned_text, max_inputs=2)
@@ -711,25 +803,53 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
                 synthetic_scored = []
 
     # Short-circuit: if we have a clear typing candidate and little else, take it
+    # BUT: Only if we're in the right context (form context, not filter/search pages)
     if synthetic_scored:
         try:
             top_syn = max(synthetic_scored, key=lambda a: a.score or 0.0)
-            # If pre-ranked selection is empty or clearly weaker than typing, prefer typing now
-            rest_best = 0.0
-            try:
-                rest_best = max([0.0] + [float(_salience(e)) for e in interactables])
-            except Exception:
+            
+            # Validate context: don't short-circuit if we're typing into wrong fields
+            # Generic validation - no task-specific assumptions
+            current_url = (state.get('current_url') or '').lower()
+            action_label = (top_syn.label or '').lower()
+            
+            # Skip if typing into filter/search boxes (generic pattern - not form fields)
+            filter_search_keywords = ['filter', 'search', 'all ', 'find', 'lookup', 'query']
+            is_filter_field = any(kw in action_label for kw in filter_search_keywords)
+            
+            # Skip if URL suggests we're on a list/view/browse page (generic pattern)
+            # These pages typically have filters, not form inputs for creation
+            is_list_view = any(pattern in current_url for pattern in ['/list', '/all', '/browse', '/view/', '/items'])
+            
+            # Only short-circuit if:
+            # 1. We're NOT on a list/view page (generic check)
+            # 2. The field is NOT a filter/search box (generic check)
+            # 3. We have an active form context (from active_context detection, which is already generic)
+            should_short_circuit = (
+                not is_list_view and 
+                not is_filter_field and
+                is_form_ctx  # Use the generic form context detection from above
+            )
+            
+            if should_short_circuit:
+                # If pre-ranked selection is empty or clearly weaker than typing, prefer typing now
                 rest_best = 0.0
-            if (not interactables) or ((top_syn.score or 0.0) >= rest_best + 2.0):
-                if logger:
-                    logger.log("Short-circuit: selecting synthetic type action", "INFO")
-                adjusted = [top_syn]
-                return {
-                    'scored_actions': adjusted,
-                    'next_action': None,
-                    'last_scoring_fingerprint': current_fp,
-                    'last_scored_step': step,
-                }
+                try:
+                    rest_best = max([0.0] + [float(_salience(e)) for e in interactables])
+                except Exception:
+                    rest_best = 0.0
+                if (not interactables) or ((top_syn.score or 0.0) >= rest_best + 2.0):
+                    if logger:
+                        logger.log(f"Short-circuit: selecting synthetic type action on '{top_syn.label}' (context validated)", "INFO")
+                    adjusted = [top_syn]
+                    return {
+                        'scored_actions': adjusted,
+                        'next_action': None,
+                        'last_scoring_fingerprint': current_fp,
+                        'last_scored_step': step,
+                    }
+            elif logger:
+                logger.log(f"Skipping short-circuit: field '{top_syn.label}' appears to be a filter/search or not in form context", "DEBUG")
         except Exception:
             pass
 
@@ -831,11 +951,28 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     # Build compact prompt (short keys, minimal context)
     recent_text = chr(10).join(history_summary) if history_summary else "None"
     subtask_line = (current_sub_task['description'] if current_sub_task else 'None')
+    
+    # Best practice: Include LLM-formatted DOM if available (for better context)
+    llm_dom_section = ""
+    llm_dom = state.get('llm_dom')
+    if llm_dom:
+        # Truncate if too long (keep first 2000 chars for token efficiency)
+        dom_preview = llm_dom[:2000] + ("..." if len(llm_dom) > 2000 else "")
+        llm_dom_section = f"\n# INTERACTIVE ELEMENTS (indexed)\nInteractive elements are shown as [index]<tag>text</tag>. Only elements with [index] can be interacted with:\n{dom_preview}\n"
+    
+    # Include error feedback if present (short-term memory)
+    error_section = ""
+    short_term_error = state.get('short_term_error_memory')
+    if short_term_error:
+        error_section = f"\n# ERROR FEEDBACK (from last action)\n{short_term_error}\n"
+    
     prompt = (
         "GOAL: " + (state.get('goal', '')[:160]) + "\n" +
         "URL: " + (state.get('current_url', '')[:140]) + "\n" +
+        error_section +
         ("HINTS:\n" + dynamic_hints + "\n" if dynamic_hints else "") +
         ("SUBTASK: " + subtask_line + "\n" if sub_tasks else "") +
+        llm_dom_section +
         "RECENT:\n" + recent_text + "\n" +
         "CANDIDATES (short, keys: i=index, r=role, l=label, s=selector, d=disabled):\n" + json.dumps(compact_candidates) + "\n" +
         "Pick best 'i' and provide 1-2 sentence reason. Return JSON: {\"i\": <index>, \"reason\": \"...\"}"
@@ -879,14 +1016,31 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         reason = str(choice.get('reason') or '').strip()
         # Heuristic: decide action_type based on role
         role = (chosen_elem.get('role') or '').lower()
+        tag = (chosen_elem.get('tag') or '').lower()
         inferred_type = 'click'
-        if role in ['textbox', 'combobox']:
+        
+        # Textboxes are always type actions
+        if role == 'textbox':
             inferred_type = 'type'
+        # Comboboxes: distinguish between button-based (click) and input-based (type)
+        elif role == 'combobox':
+            # If it's a button tag, it's a dropdown button (click)
+            # If it has a placeholder indicating searchability, it might be typeable
+            # But most comboboxes in modern apps are button-based dropdowns
+            if tag == 'button':
+                inferred_type = 'click'  # Button-based combobox = click to open dropdown
+            elif chosen_elem.get('placeholder') and any(word in (chosen_elem.get('placeholder') or '').lower() for word in ['search', 'type', 'enter', 'filter']):
+                inferred_type = 'type'  # Searchable combobox = type
+            else:
+                # Default: button-based combobox (most common case)
+                inferred_type = 'click'
+        
         # Attach text for type actions using the same summarizer logic as synthetic path
         planned_text_llm = None
         try:
             if inferred_type == 'type':
-                planned_text_llm = _summarize_instruction(state.get('instruction') or state.get('goal') or '')
+                # Prefer goal over instruction for better structured text (goal is decomposed and may have quotes)
+                planned_text_llm = _summarize_instruction(state.get('goal') or state.get('instruction') or '')
         except Exception:
             planned_text_llm = None
         parsed_actions = [
@@ -910,7 +1064,19 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         for e in shortlist[:5]:
             try:
                 role = (e.get('role') or '').lower()
-                inferred_type = 'type' if role in ['textbox', 'combobox'] else 'click'
+                tag = (e.get('tag') or '').lower()
+                # Use same logic as main path: textbox = type, combobox depends on tag
+                if role == 'textbox':
+                    inferred_type = 'type'
+                elif role == 'combobox':
+                    if tag == 'button':
+                        inferred_type = 'click'  # Button-based combobox
+                    elif e.get('placeholder') and any(word in (e.get('placeholder') or '').lower() for word in ['search', 'type', 'enter', 'filter']):
+                        inferred_type = 'type'  # Searchable combobox
+                    else:
+                        inferred_type = 'click'  # Default: button-based
+                else:
+                    inferred_type = 'click'
                 synthesized.append(
                     ScoredAction(
                         action_type=inferred_type,
@@ -926,6 +1092,53 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         parsed_actions = synthesized
 
     # parsed_actions already constructed from the compact re-ranker choice above
+    
+    # Post-process: Field prioritization - boost unfilled required fields from goal
+    # Extract required fields from goal and check which ones are already filled
+    try:
+        goal_text = (state.get('goal') or state.get('instruction') or '').lower()
+        action_history = state.get('action_history') or []
+        
+        # Identify required fields from goal patterns
+        required_fields = {}
+        field_patterns = {
+            'project': ['project', 'team', 'workspace'],
+            'assignee': ['assign', 'assignee', 'owner', 'to user', 'to @'],
+            'status': ['status', 'state', 'stage'],
+            'priority': ['priority', 'urgency', 'importance'],
+        }
+        
+        for field_name, keywords in field_patterns.items():
+            if any(kw in goal_text for kw in keywords):
+                required_fields[field_name] = keywords
+        
+        # Check which fields have been filled (from action_history)
+        filled_fields = set()
+        for hist_action in action_history:
+            if hist_action.get('type') == 'type':
+                hist_label = (hist_action.get('label') or '').lower()
+                for field_name, keywords in required_fields.items():
+                    if any(kw in hist_label for kw in keywords):
+                        filled_fields.add(field_name)
+        
+        # Boost actions that match unfilled required fields
+        if required_fields:
+            for action in parsed_actions:
+                if action.action_type == 'type':
+                    action_label = (action.label or '').lower()
+                    for field_name, keywords in required_fields.items():
+                        if field_name not in filled_fields:
+                            # Check if this action matches an unfilled required field
+                            if any(kw in action_label for kw in keywords):
+                                # Boost score for unfilled required fields
+                                if action.score < 9.5:
+                                    action.score = min(9.5, action.score + 1.5)
+                                    action.reasoning = f"[REQUIRED FIELD BOOST] {action.reasoning} This field ({field_name}) is required by the goal and hasn't been filled yet."
+                                    if logger:
+                                        logger.log(f"Boosted {action.label} for unfilled required field: {field_name}", "DEBUG")
+    except Exception as e:
+        if logger:
+            logger.log(f"Field prioritization failed: {e}", "DEBUG")
     
     # Post-process: Penalize role=link when role=option exists for same label
     # This prevents clicking background links when dropdown options are available
@@ -1104,6 +1317,13 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
                     suffix = f" → type text='{a.text}'" if (a.action_type == 'type' and a.text) else ""
                     logger.log(f"  - [{a.score:.1f}] {a.action_type} '{a.label}'{suffix} - selector: {a.selector}", "SCORE")
 
+    # Best practice: Limit actions per step (browser-use pattern)
+    max_actions = int(state.get('max_actions_per_step') or 1)
+    if len(adjusted) > max_actions:
+        if logger:
+            logger.log(f"Limiting actions from {len(adjusted)} to {max_actions} per step", "DEBUG")
+        adjusted = adjusted[:max_actions]
+    
     return {
         'scored_actions': adjusted,
         'next_action': None,

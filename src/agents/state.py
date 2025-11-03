@@ -66,8 +66,18 @@ class AgentState(TypedDict):
     # Internal locks / cadence controls
     execution_step_lock: Optional[int]  # Prevent duplicate execute within same step
     last_evaluated_step: Optional[int]  # Prevent duplicate evaluate within same step
+    max_actions_per_step: int  # Limit actions per step (default: 1, following browser-use best practice)
+    consecutive_empty_actions: int  # Track consecutive empty action attempts for retry logic
 
     # Target entity anchoring (object permanence across steps)
     # Example for issues: { "id": "ALP-7", "title": "Clean up the UI", "url": "/issue/ALP-7/..." }
     target_entity: Optional[Dict[str, Any]]
+    
+    # LLM-oriented DOM representation (from observe_node)
+    llm_dom: Optional[str]  # Formatted DOM with [index]<tag>text</tag> format
+    llm_index_to_selector: Optional[Dict[int, str]]  # Map of index -> selector for action resolution
+    
+    # Error feedback for LLM (short-term and long-term memory)
+    short_term_error_memory: Optional[str]  # Shown once to LLM (e.g., available actions)
+    long_term_error_memory: Optional[str]  # Persistent error info stored in agent memory
 

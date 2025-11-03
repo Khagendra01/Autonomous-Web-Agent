@@ -275,6 +275,34 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     # Compute a stable fingerprint of the interactables for caching downstream
     interactable_fingerprint = _compute_interactable_fingerprint(all_interactables)
 
+    # Build LLM-oriented DOM with indexed interactive elements
+    index_to_selector: Dict[int, str] = {}
+    llm_lines: list[str] = []
+    for idx, e in enumerate(pruned, start=1):
+        try:
+            tag = (e.get('tag') or '').lower() or 'node'
+            # Prefer meaningful text for LLM
+            text_candidates: list[str] = []
+            for k in ['label', 'placeholder', 'aria-label', 'title', 'id', 'href']:
+                v = e.get(k)
+                if isinstance(v, str) and v.strip():
+                    text_candidates.append(v.strip())
+            # fallback to type/href short
+            if not text_candidates:
+                if isinstance(e.get('type'), str) and e.get('type').strip():
+                    text_candidates.append(e['type'].strip())
+            text = (text_candidates[0] if text_candidates else '').strip()
+            text = text[:120]
+            sel = e.get('selector') or ''
+            if isinstance(sel, str) and sel:
+                index_to_selector[idx] = sel
+            llm_lines.append(f"[{idx}]<{tag}>{text}</{tag}>")
+        except Exception:
+            # Best effort formatting
+            llm_lines.append(f"[{idx}]<node></node>")
+
+    llm_dom = "\n".join(llm_lines)
+
     # Update state
     updates = {
         'current_url': observe.url,
@@ -287,6 +315,9 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
         'screenshots': (state.get('screenshots') or []) + [screenshot_bytes],
         'prev_interactable_count': current_count,  # Store current count for next step
         'interactable_fingerprint': interactable_fingerprint,
+        # LLM-focused additions
+        'llm_dom': llm_dom,
+        'llm_index_to_selector': index_to_selector,
     }
     
     print(f"  URL: {observe.url}")

@@ -113,11 +113,47 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     max_candidates = int(state.get('decision_max_candidates') or 12)
 
     # Filter out actions already tried on this URL to reduce loops
+    # Best practice: Resolve indices to selectors for consistent comparison
     current_url = state.get('current_url') or ''
     tried_map = state.get('tried_actions_by_url') or {}
     tried_here: List[str] = tried_map.get(current_url, [])
+    
+    # Resolve indices to selectors for accurate filtering
+    index_map = state.get('llm_index_to_selector') or {}
+    
+    def _get_comparison_selector(action: ScoredAction) -> str:
+        """Get selector for comparison, resolving index if needed."""
+        sel = action.selector
+        try:
+            if sel.isdigit():
+                idx = int(sel)
+                return index_map.get(idx, sel)  # Return resolved selector or original
+        except (ValueError, AttributeError):
+            pass
+        return sel
+    
+    def _get_action_key(action: ScoredAction) -> str:
+        """Get action key for tried_actions_by_url comparison, including text for type actions."""
+        resolved_sel = _get_comparison_selector(action)
+        if action.action_type == 'type' and action.text:
+            return f"{action.action_type}|{resolved_sel}|{action.text[:50]}"
+        return f"{action.action_type}|{resolved_sel}"
+    
+    def _is_action_tried(action: ScoredAction) -> bool:
+        """Check if action (or same field for type actions) has been tried.
+        For type actions, checks both base key (field) and text-specific key."""
+        base_key = f"{action.action_type}|{_get_comparison_selector(action)}"
+        if base_key in tried_here:
+            return True
+        # For type actions, also check text-specific key
+        if action.action_type == 'type' and action.text:
+            text_key = f"{action.action_type}|{_get_comparison_selector(action)}|{action.text[:50]}"
+            if text_key in tried_here:
+                return True
+        return False
+    
     filtered_scored: List[ScoredAction] = [
-        a for a in scored if f"{a.action_type}|{a.selector}" not in tried_here
+        a for a in scored if not _is_action_tried(a)
     ]
     
     # Filter out actions with score < 5 to prevent choosing low-quality actions
@@ -149,19 +185,88 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
             base_list = gated
         # If everything was blocked, keep base_list unchanged to avoid deadlock
 
-    # Avoid immediate repetition of the exact same action (type|selector) as last executed
+    # Avoid immediate repetition AND prevent typing into any field already typed into
+    # Best practice: action_history now stores resolved selectors, so direct comparison works
     action_history = state.get('action_history') or []
     if action_history:
         last = action_history[-1]
-        last_key = f"{last.get('type','')}|{last.get('selector','')}"
-        non_repeating: List[ScoredAction] = [a for a in base_list if f"{a.action_type}|{a.selector}" != last_key]
+        last_selector = last.get('selector', '')  # Already resolved from execute.py
+        last_key = f"{last.get('type','')}|{last_selector}"
+        
+        # For type actions: prevent typing into ANY field that's been typed into before (not just last one)
+        # This prevents going back to previously filled fields
+        # Track by both selector AND label for robustness (selectors can change, labels are more stable)
+        # Also track count to detect loops (same field typed 2+ times)
+        typed_fields_selectors = set()
+        typed_fields_labels = set()
+        typed_fields_count = {}  # Track how many times each field was typed into
+        typed_fields_text = {}  # Track text typed into each field to detect duplicate text loops
+        
+        for hist_action in action_history:
+            if hist_action.get('type') == 'type':
+                hist_selector = hist_action.get('selector', '')
+                hist_label = (hist_action.get('label') or '').strip().lower()
+                hist_text = (hist_action.get('text') or '').strip().lower()
+                
+                if hist_selector:
+                    typed_fields_selectors.add(hist_selector)
+                    typed_fields_count[hist_selector] = typed_fields_count.get(hist_selector, 0) + 1
+                    if hist_text:
+                        typed_fields_text[hist_selector] = typed_fields_text.get(hist_selector, set())
+                        typed_fields_text[hist_selector].add(hist_text[:50])  # Store first 50 chars
+                
+                if hist_label:
+                    typed_fields_labels.add(hist_label)
+                    typed_fields_count[f"label:{hist_label}"] = typed_fields_count.get(f"label:{hist_label}", 0) + 1
+        
+        non_repeating: List[ScoredAction] = []
+        for a in base_list:
+            candidate_key = f"{a.action_type}|{_get_comparison_selector(a)}"
+            # Skip if it's the exact last action
+            if candidate_key == last_key:
+                continue
+            # Skip if it's a type action on a field we've already typed into
+            # Check both selector AND label for robustness
+            if a.action_type == 'type':
+                resolved_sel = _get_comparison_selector(a)
+                action_label = (a.label or '').strip().lower()
+                action_text = (a.text or '').strip().lower()
+                
+                # Skip if field was already typed into (by selector or label)
+                if resolved_sel in typed_fields_selectors:
+                    # Additional check: if same text was typed before, definitely skip (loop detection)
+                    if action_text and resolved_sel in typed_fields_text:
+                        if action_text[:50] in typed_fields_text[resolved_sel]:
+                            if logger:
+                                logger.log(f"Skipping type action on '{a.label}': same text already typed (loop prevention)", "DEBUG")
+                            continue
+                    # Skip if typed into 2+ times (likely a loop)
+                    if typed_fields_count.get(resolved_sel, 0) >= 2:
+                        if logger:
+                            logger.log(f"Skipping type action on '{a.label}': field typed into {typed_fields_count.get(resolved_sel, 0)} times (loop prevention)", "DEBUG")
+                        continue
+                    continue
+                
+                if action_label and action_label in typed_fields_labels:
+                    # Skip if typed into 2+ times by label
+                    if typed_fields_count.get(f"label:{action_label}", 0) >= 2:
+                        if logger:
+                            logger.log(f"Skipping type action on '{a.label}': field typed into {typed_fields_count.get(f'label:{action_label}', 0)} times by label (loop prevention)", "DEBUG")
+                        continue
+                    continue
+            non_repeating.append(a)
+        
         if non_repeating:
             base_list = non_repeating
 
     if not base_list:
         if logger:
             logger.log("No candidates available after filtering", "WARNING")
-        return { 'next_action': state.get('next_action') }
+        # Best practice: Retry on empty actions - clear error memory and return empty
+        return {
+            'next_action': state.get('next_action'),
+            'short_term_error_memory': 'No valid actions available after filtering. Page may have changed.',
+        }
 
     # Short-circuit when trivial
     if len(base_list) == 1:
@@ -206,10 +311,26 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     # Build compact prompt with legend for keys
     compact_recent = json.dumps(recent[-3:]) if recent else "None"
     compact_errors = ", ".join(errors[:2]) if errors else "None"
+    
+    # Best practice: Include LLM-formatted DOM if available
+    llm_dom_section = ""
+    llm_dom = state.get('llm_dom')
+    if llm_dom:
+        dom_preview = llm_dom[:1500] + ("..." if len(llm_dom) > 1500 else "")
+        llm_dom_section = f"\n# INTERACTIVE ELEMENTS\n[index]<tag>text</tag> format - only indexed elements are interactive:\n{dom_preview}\n"
+    
+    # Include error feedback if present
+    error_section = ""
+    short_term_error = state.get('short_term_error_memory')
+    if short_term_error:
+        error_section = f"\n# ERROR FEEDBACK\n{short_term_error}\n"
+    
     prompt = (
         "GOAL: " + (goal[:160]) + "\n" +
         "URL: " + (current_url_str[:140]) + "\n" +
+        error_section +
         ("HINTS:\n" + dynamic_hints + "\n" if dynamic_hints else "") +
+        llm_dom_section +
         "ERRORS: " + compact_errors + "\n" +
         "RECENT: " + compact_recent + "\n" +
         "CANDIDATES (keys: i=index, r=action_type, l=label, s=selector, d=disabled, k=score): " + json.dumps(compact_candidates) + "\n" +
