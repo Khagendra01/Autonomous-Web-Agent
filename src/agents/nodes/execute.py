@@ -1,9 +1,9 @@
 from typing import Any, Dict, List
-import requests
 
 from ..state import AgentState, ScoredAction
 from .common import driver_client
 from ..utils.logger import get_logger
+from urllib.parse import urlparse
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
@@ -12,13 +12,22 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     action = state['next_action']
     
     if not action:
-        print(f"\n[EXECUTE] No action to execute")
         if logger:
             logger.log("EXECUTE: No action to execute", "WARNING")
         return {'error': 'No valid action found'}
     
-    print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
-    print(f"  Reasoning: {action.reasoning}")
+    # Prevent duplicate execution within the same step
+    current_step = int(state.get('step_count', 0))
+    if state.get('execution_step_lock') == current_step:
+        if logger:
+            logger.log(f"EXECUTE: Skipped duplicate execute in step {current_step}", "WARNING")
+        return {
+            'step_count': state['step_count'],
+        }
+
+    if logger:
+        logger.log(f"EXECUTE: {action.action_type} on '{action.label}' (score: {action.score:.1f})", "INFO")
+        logger.log(f"Reasoning: {action.reasoning}", "INFO")
     
     # Build action payload
     payload = {
@@ -63,16 +72,29 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         screenshots = state.get('screenshots') or []
         focused_after_steps = set(state.get('focused_after_steps') or [])
     
+    # Optional micro-batch: if an intended option is provided, perform a 2-step sequence
+    try:
+        intended_option = (state.get('intended_option') or '').strip()
+    except Exception:
+        intended_option = ''
+
     # Execute via driver
     try:
         if logger:
             logger.log(f"Calling driver_client.act() with payload: {payload}", "DEBUG")
         
-        result = driver_client.act(
-            type=payload['type'],
-            selector=payload.get('selector'),
-            text=payload.get('text')
-        )
+        # If we have an intended option and current action is a click, try sequence: open control → select option
+        if intended_option and action.action_type == 'click' and action.selector and 'role=button' in (action.selector or ''):
+            seq = [action.selector, f'role=option[name="{intended_option}"]']
+            if logger:
+                logger.log(f"Executing batched sequence: {seq}", "DEBUG")
+            result = driver_client.act(type='sequence', selectors=seq)
+        else:
+            result = driver_client.act(
+                type=payload['type'],
+                selector=payload.get('selector'),
+                text=payload.get('text')
+            )
         
         if logger:
             logger.log_dict("Driver Response", {
@@ -82,7 +104,6 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         
         if not result.ok:
             error_msg = result.error if hasattr(result, 'error') else 'Unknown error'
-            print(f"  ❌ Action failed: {error_msg}")
             if logger:
                 logger.log(f"Action FAILED: {error_msg}", "ERROR")
                 logger.log(f"Failed selector: {payload.get('selector')}", "ERROR")
@@ -91,9 +112,24 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
                 'stuck_count': state['stuck_count'] + 1
             }
         
-        print(f"  ✓ Action executed successfully")
         if logger:
             logger.log("Action executed successfully", "SUCCESS")
+
+        # Update selector memory registry on success
+        try:
+            registry = dict(state.get('selector_registry') or {})
+            label_key = (action.label or '').strip().lower()
+            if label_key:
+                entry = registry.get(label_key) or {}
+                sel = payload.get('selector') or ''
+                if sel:
+                    # Track success counts per selector
+                    count = int(entry.get(sel) or 0)
+                    entry[sel] = count + 1
+                    registry[label_key] = entry
+                    state['selector_registry'] = registry
+        except Exception:
+            pass
 
         # Post-action verification for typing: ensure text became visible; retry once if not
         if action.action_type == 'type' and action.text:
@@ -116,19 +152,75 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             except Exception:
                 pass
         
+        # Deterministic post-action verification for status changes
+        predicate_truths = dict(state.get('predicate_truths') or {})
+        try:
+            label_lower = (action.label or '').lower()
+            # If action likely changed status (e.g., clicking 'Done' or status button), poll for 'Done'
+            if any(term in label_lower for term in ['done', 'status', 'in progress']):
+                attempts = 3
+                observed_done = False
+                for _ in range(attempts):
+                    try:
+                        verify = driver_client.act(type='assert', kind='text_present', text='Done')
+                        if bool(verify.ok):
+                            observed_done = True
+                            break
+                    except Exception:
+                        pass
+                    try:
+                        # small backoff to allow UI to update
+                        driver_client.act(type='await', kind='timeout', timeout=250)
+                    except Exception:
+                        pass
+                if observed_done:
+                    predicate_truths['statusIsDone'] = True
+        except Exception:
+            predicate_truths = dict(state.get('predicate_truths') or {})
+
         # Add to history (include text for type actions so we can verify content later)
+        # Store the URL where this action occurred for proper context verification
+        current_url = state.get('current_url') or ''
         action_record = {
             'type': action.action_type,
             'selector': action.selector,
             'label': action.label,
             'score': action.score,
             'reasoning': action.reasoning,
+            'url': current_url,  # Store URL where action occurred for context verification
         }
         if action.action_type == 'type' and action.text:
             action_record['text'] = action.text
         
+        # Anchor target entity when evidence appears (URL or label contains an ID)
+        target_entity = state.get('target_entity') or {}
+        try:
+            # If URL indicates an entity detail, capture it
+            if '/issue/' in current_url and 'id' not in target_entity:
+                # crude parse: /issue/<ID>/...
+                try:
+                    parts = current_url.split('/issue/')[1].split('/')
+                    issue_id = parts[0]
+                except Exception:
+                    issue_id = None
+                if issue_id:
+                    target_entity = {
+                        'id': issue_id,
+                        'url': current_url,
+                    }
+            # If label shows an ID token like ABC-123, capture it
+            if not target_entity and action.label:
+                import re
+                m = re.search(r"\b([A-Z]{2,}-\d+)\b", action.label)
+                if m:
+                    target_entity = {
+                        'id': m.group(1),
+                        'url': current_url or None,
+                    }
+        except Exception:
+            target_entity = state.get('target_entity') or {}
+
         # Record this action as tried for the current URL to avoid repeating it
-        current_url = state.get('current_url') or ''
         tried_map = dict(state.get('tried_actions_by_url') or [])
         if not isinstance(tried_map, dict):
             tried_map = {}
@@ -145,15 +237,30 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             'tried_actions_by_url': tried_map,
             'screenshots': screenshots,
             'focused_after_steps': list(focused_after_steps),
+            'execution_step_lock': current_step,
+            'target_entity': target_entity or state.get('target_entity'),
+            'predicate_truths': predicate_truths,
+            'selector_registry': state.get('selector_registry') or registry if 'registry' in locals() else state.get('selector_registry'),
         }
         
     except Exception as e:
-        print(f"  ❌ Exception during action: {e}")
         import traceback
         if logger:
             logger.log(f"Exception during action execution: {str(e)}", "ERROR")
             logger.log(f"Exception traceback:\n{traceback.format_exc()}", "ERROR")
             logger.log(f"Failed selector: {payload.get('selector')}", "ERROR")
+        # On error, slightly penalize selector in registry
+        try:
+            registry = dict(state.get('selector_registry') or {})
+            label_key = (action.label or '').strip().lower()
+            if label_key:
+                entry = registry.get(label_key) or {}
+                sel = payload.get('selector') or ''
+                if sel:
+                    entry[sel] = int(entry.get(sel) or 0) - 1
+                    registry[label_key] = entry
+        except Exception:
+            registry = state.get('selector_registry') or {}
         return {
             'error': str(e),
             'stuck_count': state['stuck_count'] + 1

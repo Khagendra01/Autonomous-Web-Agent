@@ -7,6 +7,7 @@ like options, menuitems, and links, with robust fallback strategies.
 from __future__ import annotations
 import re
 from typing import Union
+import os
 from playwright.sync_api import Locator, Frame, Page
 
 from .selector_normalizer import normalize_label
@@ -94,6 +95,10 @@ def find_aria_element(
     # Build candidate list based on role
     candidates = []
     
+    # Heuristic: detect navigation intent from label to allow deliberate global link clicks
+    nav_terms = ['profile', 'view', 'details', 'open', 'navigate']
+    has_navigation_intent = any(t in (original_label or '').lower() for t in nav_terms)
+
     # Try each label variation
     for try_label in labels_to_try:
         if role == 'option':
@@ -229,15 +234,14 @@ def _verify_option_selection(
             for i in range(min(comboboxes.count(), 5)):  # Check up to 5 comboboxes
                 try:
                     combo = comboboxes.nth(i)
-                    # Check if combobox is collapsed
-                    aria_expanded = combo.get_attribute('aria-expanded')
-                    if aria_expanded == 'false':
-                        # Check if the combobox value/text contains our label
-                        combo_text = combo.inner_text(timeout=500).lower()
-                        if normalized_label.lower() in combo_text:
-                            if debug:
-                                print(f"    [DEBUG] Verified selection: combobox shows '{combo_text}'")
-                            return True
+                    # Check if the combobox value/text contains our label
+                    # Note: Check regardless of aria-expanded state, as some UIs (like Asana)
+                    # keep combobox expanded to allow multi-select even after selection
+                    combo_text = combo.inner_text(timeout=500).lower()
+                    if normalized_label.lower() in combo_text:
+                        if debug:
+                            print(f"    [DEBUG] Verified selection: combobox shows '{combo_text}'")
+                        return True
                 except Exception:
                     continue
         except Exception:
@@ -308,22 +312,21 @@ def click_aria_element(
     Returns:
         True if successfully clicked and verified, False otherwise.
     """
-    # Ensure container is open (for dropdowns/menus)
+    # Ensure container is open (for dropdowns/menus) and detect active container for any role
     active_container = None
+    # Hard-coded compose-safe mode ON by default (config)
+    compose_safe_mode = True
+    try:
+        # Try to detect an active container regardless of role
+        containers_any = ctx.locator('[role="listbox"]:visible, [role="menu"]:visible, [data-state="open"]:visible, [aria-modal="true"]:visible')
+        if containers_any.count() > 0:
+            active_container = containers_any.first
+            if debug:
+                print(f"    [DEBUG] Active container detected (compose context likely active)")
+    except Exception:
+        pass
     if role in ('option', 'menuitem'):
         ensure_container_open(ctx, page)
-        
-        # Get the active dropdown container to scope our search
-        try:
-            # Find the most recently opened container
-            containers = ctx.locator('[role="listbox"]:visible, [role="menu"]:visible, [data-state="open"]:visible')
-            if containers.count() > 0:
-                # Use the first visible container (most likely the active one)
-                active_container = containers.first
-                if debug:
-                    print(f"    [DEBUG] Found active dropdown container, scoping search to it")
-        except Exception:
-            pass
     
     normalized_label = normalize_label(label)
     original_label = label.strip() if label else ''
@@ -336,8 +339,9 @@ def click_aria_element(
     if debug:
         print(f"    [DEBUG] Trying labels: {labels_to_try} (original: '{original_label}', normalized: '{normalized_label}')")
     
-    # Build comprehensive candidate list, scoped to container if available
+    # Build comprehensive candidate list, with strong preference for container scope when available
     candidates = []
+    container_first_candidates = []  # tried before global when container exists
     search_ctx = active_container if active_container else ctx
     
     # Try each label variation
@@ -364,11 +368,21 @@ def click_aria_element(
                 ctx.locator('[role="menuitem"]', has_text=try_label).first,
             ])
         elif role == 'link':
-            candidates.extend([
-                ctx.get_by_role('link', name=try_label).first,
-                ctx.locator('[role="link"]', has_text=try_label).first,
-                ctx.locator('a', has_text=try_label).first,
-            ])
+            # If an active container exists (modal/listbox/menu), try container-scoped link candidates first
+            if active_container:
+                container_first_candidates.extend([
+                    active_container.get_by_role('link', name=try_label).first,
+                    active_container.locator('[role="link"]', has_text=try_label).first,
+                    active_container.locator('a', has_text=try_label).first,
+                ])
+            # Add global candidates as fallback only. When an active container exists,
+            # only allow global fallback if navigation intent is explicit AND compose_safe_mode is OFF.
+            if (not active_container) or (has_navigation_intent and not compose_safe_mode):
+                candidates.extend([
+                    ctx.get_by_role('link', name=try_label).first,
+                    ctx.locator('[role="link"]', has_text=try_label).first,
+                    ctx.locator('a', has_text=try_label).first,
+                ])
     
     # Regex candidates - try both labels, scoped to container if available
     for try_label in labels_to_try:
@@ -391,10 +405,16 @@ def click_aria_element(
                     ctx.locator('[role="menuitem"]').filter(has_text=regex).first,
                 ])
             elif role == 'link':
-                candidates.extend([
-                    ctx.locator('[role="link"]').filter(has_text=regex).first,
-                    ctx.locator('a').filter(has_text=regex).first,
-                ])
+                if active_container:
+                    container_first_candidates.extend([
+                        active_container.locator('[role="link"]').filter(has_text=regex).first,
+                        active_container.locator('a').filter(has_text=regex).first,
+                    ])
+                if (not active_container) or (has_navigation_intent and not compose_safe_mode):
+                    candidates.extend([
+                        ctx.locator('[role="link"]').filter(has_text=regex).first,
+                        ctx.locator('a').filter(has_text=regex).first,
+                    ])
         except Exception:
             pass
     
@@ -420,7 +440,15 @@ def click_aria_element(
                     candidates.extend([
                         ctx.locator('[role="menuitem"]').filter(has_text=email_only).first,
                     ])
-                elif role == 'link':
+            elif role == 'link':
+                if active_container:
+                    container_first_candidates.extend([
+                        active_container.locator('[role="link"]').filter(has_text=email_only).first,
+                        active_container.locator('a').filter(has_text=email_only).first,
+                    ])
+                # Email regex can cause cross-page collisions; when a container is active,
+                # only widen to global if navigation intent is explicit and compose_safe_mode is OFF
+                if (not active_container) or (has_navigation_intent and not compose_safe_mode):
                     candidates.extend([
                         ctx.locator('[role="link"]').filter(has_text=email_only).first,
                         ctx.locator('a').filter(has_text=email_only).first,
@@ -452,15 +480,45 @@ def click_aria_element(
                             ctx.locator('[role="menuitem"]').filter(has_text=part).first,
                         ])
                     elif role == 'link':
-                        candidates.extend([
-                            ctx.locator('[role="link"]').filter(has_text=part).first,
-                            ctx.locator('a').filter(has_text=part).first,
-                        ])
+                        if active_container:
+                            container_first_candidates.extend([
+                                active_container.locator('[role="link"]').filter(has_text=part).first,
+                                active_container.locator('a').filter(has_text=part).first,
+                            ])
+                        if (not active_container) or (has_navigation_intent and not compose_safe_mode):
+                            candidates.extend([
+                                ctx.locator('[role="link"]').filter(has_text=part).first,
+                                ctx.locator('a').filter(has_text=part).first,
+                            ])
                 except Exception:
                     pass
     
-    # Try clicking candidates
-    for cand in candidates:
+    # If container exists and role is link, try container-first candidates before global fallback
+    ordered_candidates = []
+    if role == 'link' and active_container:
+        ordered_candidates.extend(container_first_candidates)
+        # In compose-safe mode, do not try global link fallbacks while container is active
+        if not compose_safe_mode:
+            ordered_candidates.extend(candidates)
+    else:
+        ordered_candidates.extend(candidates)
+
+    # Try clicking candidates with attempt/time budgets
+    import time as _time
+    start_ts = _time.time()
+    max_ms = 1.8  # overall time budget per call (seconds)
+    max_attempts = 14
+    attempts = 0
+    for cand in ordered_candidates:
+        attempts += 1
+        if attempts > max_attempts:
+            if debug:
+                print(f"    [DEBUG] Stopping: attempts>{max_attempts}")
+            break
+        if (_time.time() - start_ts) > max_ms:
+            if debug:
+                print(f"    [DEBUG] Stopping: time budget exceeded ({max_ms}s)")
+            break
         try:
             if cand and cand.count() > 0:
                 # Ensure element is scrollable and visible
@@ -544,8 +602,35 @@ def click_aria_element(
                 else:
                     # For links, try normal click first
                     try:
+                        # Capture URL to detect unintended navigations when inside a container context
+                        prev_url = page.url if page else None
                         cand.click(timeout=5000)
                         page.wait_for_timeout(200)
+                        # If we had an active container and clicking caused navigation, treat as a bad candidate
+                        try:
+                            if active_container and prev_url and page and page.url != prev_url:
+                                if has_navigation_intent and not compose_safe_mode:
+                                    # Allow navigation when intent was explicitly navigational
+                                    if debug:
+                                        print(f"    [DEBUG] Navigation occurred and was allowed due to intent")
+                                else:
+                                    if debug:
+                                        print(f"    [DEBUG] Link click navigated away while container active; rejecting candidate")
+                                    # Consider this a failure; do not return success
+                                    # Best-effort: do not attempt to auto-navigate back to avoid side effects
+                                    continue
+                            # Compose-safe: ensure container still visible after click
+                            if active_container and compose_safe_mode:
+                                try:
+                                    containers_check = ctx.locator('[role="listbox"]:visible, [role="menu"]:visible, [data-state="open"]:visible, [aria-modal="true"]:visible')
+                                    if containers_check.count() == 0:
+                                        if debug:
+                                            print(f"    [DEBUG] Compose-safe: container not visible after click; rejecting candidate")
+                                        continue
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
                         return True
                     except Exception as click_err:
                         error_str = str(click_err).lower()
@@ -555,16 +640,34 @@ def click_aria_element(
                                 print(f"    [DEBUG] Normal click blocked, trying force click...")
                             try:
                                 # Try force click (bypasses actionability checks)
+                                prev_url = page.url if page else None
                                 cand.click(timeout=3000, force=True)
                                 page.wait_for_timeout(200)
+                                if active_container and prev_url and page and page.url != prev_url:
+                                    if has_navigation_intent and not compose_safe_mode:
+                                        if debug:
+                                            print(f"    [DEBUG] Force-click navigation allowed due to intent")
+                                    else:
+                                        if debug:
+                                            print(f"    [DEBUG] Force link click navigated away while container active; rejecting candidate")
+                                        continue
                                 return True
                             except Exception as force_err:
                                 if debug:
                                     print(f"    [DEBUG] Force click failed, trying JS click: {force_err}")
                                 try:
                                     # Try JavaScript click as fallback
+                                    prev_url = page.url if page else None
                                     cand.evaluate('element => element.click()')
                                     page.wait_for_timeout(200)
+                                    if active_container and prev_url and page and page.url != prev_url:
+                                        if has_navigation_intent and not compose_safe_mode:
+                                            if debug:
+                                                print(f"    [DEBUG] JS click navigation allowed due to intent")
+                                        else:
+                                            if debug:
+                                                print(f"    [DEBUG] JS link click navigated away while container active; rejecting candidate")
+                                            continue
                                     return True
                                 except Exception as js_err:
                                     if debug:

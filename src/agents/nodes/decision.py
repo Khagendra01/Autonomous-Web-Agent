@@ -4,7 +4,6 @@ import json
 from ..state import AgentState, ScoredAction
 from ..utils.logger import get_logger
 from ..utils.json_parser import extract_json_payload
-from ..utils.combobox import is_combobox_field, build_combobox_hints_for_decision
 from .common import client
 
 
@@ -63,14 +62,6 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
             typed_text = last_action.get('text', '').strip()
             last_label = last_action.get('label', '')
             
-            # Check if we typed into a combobox field
-            if typed_text and is_combobox_field(last_label, interactables):
-                prev_elements = state.get('prev_interactable_elements') or []
-                combobox_hints = build_combobox_hints_for_decision(
-                    typed_text, candidates, interactables, prev_elements, scored_actions
-                )
-                hints.extend(combobox_hints)
-    
     # Context: Disabled action avoidance
     disabled_submit_buttons = [
         elem.get('label', '') for elem in interactables
@@ -90,12 +81,9 @@ def _build_dynamic_decision_context(state: AgentState, candidates: List[Dict[str
     if scored_actions:
         top_scores = [a.score for a in scored_actions[:3] if hasattr(a, 'score')]
         if top_scores and all(s >= 8.0 for s in top_scores):
-            hints.append("✅ HIGH CONFIDENCE: Multiple high-scoring candidates (≥8.0) detected. These likely represent goal-critical actions. Prioritize these over exploration.")
+            hints.append("✅ HIGH CONFIDENCE: Multiple high-scoring candidates (≥8.0) detected. These likely represent goal-critical actions.")
     
-    # Context: Exploration stage
-    if step_count < 3:
-        hints.append("🔍 EARLY STAGE: Task just started. If goal-directed actions are unclear, prefer low-risk exploration (scroll, open menus) to discover options.")
-    elif step_count > 15:
+    if step_count > 10:
         hints.append("⚠️ MANY STEPS TAKEN: Task has been ongoing. If goal is not clear, re-evaluate strategy. Consider whether submission/completion actions should be prioritized.")
     
     return '\n'.join(hints) if hints else ""
@@ -108,7 +96,8 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     """
     logger = get_logger()
     step = state.get('step_count', 0)
-    print(f"\n[DECIDE] Selecting next action with autonomous policy")
+    if logger:
+        logger.log("Selecting next action with autonomous policy", "INFO")
 
     if logger:
         logger.log_section(f"DECIDE - Step {step}")
@@ -120,7 +109,7 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
         return { 'next_action': state.get('next_action') }
 
     # Configurable parameters with safe defaults
-    model_name = state.get('llm_model') or "gpt-4o"
+    model_name = state.get('llm_model') or "gpt-4.1"
     max_candidates = int(state.get('decision_max_candidates') or 15)
 
     # Filter out actions already tried on this URL to reduce loops
@@ -130,10 +119,48 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     filtered_scored: List[ScoredAction] = [
         a for a in scored if f"{a.action_type}|{a.selector}" not in tried_here
     ]
+    
+    # Filter out actions with score < 5 to prevent choosing low-quality actions
+    filtered_scored = [a for a in filtered_scored if (a.score or 0) >= 5.0]
+    
     base_list = filtered_scored if filtered_scored else scored
 
+    # Generic gating: block commit/submit actions until requirements are satisfied
+    # Commit-like labels: submit, save, create, send, confirm, done, finish, post
+    reqs = state.get('requirements') or {}
+    unmet_requirements = [k for k, v in reqs.items() if v is False]
+    if unmet_requirements:
+        if logger:
+            logger.log_dict("Prerequisite Gating", {
+                'unmet_requirements': unmet_requirements,
+                'note': 'Commit-like actions will be suppressed until requirements are met.'
+            })
+        commit_terms = ['submit', 'save', 'create', 'send', 'confirm', 'done', 'finish', 'post']
+        gated: List[ScoredAction] = []
+        blocked: List[ScoredAction] = []
+        for a in base_list:
+            label_lower = (a.label or '').lower()
+            is_commit = any(term in label_lower for term in commit_terms)
+            if is_commit:
+                blocked.append(a)
+            else:
+                gated.append(a)
+        if gated:
+            base_list = gated
+        # If everything was blocked, keep base_list unchanged to avoid deadlock
+
+    # Avoid immediate repetition of the exact same action (type|selector) as last executed
+    action_history = state.get('action_history') or []
+    if action_history:
+        last = action_history[-1]
+        last_key = f"{last.get('type','')}|{last.get('selector','')}"
+        non_repeating: List[ScoredAction] = [a for a in base_list if f"{a.action_type}|{a.selector}" != last_key]
+        if non_repeating:
+            base_list = non_repeating
+
     if not base_list:
-        print("  No candidates available after filtering")
+        if logger:
+            logger.log("No candidates available after filtering", "WARNING")
         return { 'next_action': state.get('next_action') }
 
     candidates = _serialize_candidates(base_list, max_candidates)
@@ -171,6 +198,12 @@ Select one candidate by its index 'i':
 
 # DECISION PRINCIPLES
 
+## Score Guidance (Important):
+- When scores differ significantly (≥3 points), prefer higher-scored candidates unless there's a BLOCKING reason (disabled, validation error)
+- When scores are close (within 2 points), use reasoning about goal alignment, context, and feasibility to choose
+- Scores represent LLM assessment - consider them but apply judgment for edge cases
+- If high-scored action is blocked/disabled, find the enabling action instead
+
 ## Goal Advancement (CRITICAL)
 - Prefer actions that clearly advance the stated goal
 - Consider how each candidate's score and reasoning relate to the goal
@@ -189,8 +222,7 @@ Select one candidate by its index 'i':
 
 ## Efficiency & Avoidance (IMPORTANT)
 - Avoid repeating ineffective recent actions
-- When high-quality goal-directed options are absent, prefer low-risk exploration (scroll, open menu)
-- Balance immediate goal progress with necessary discovery
+- Prioritize goal-directed actions over exploration
 
 ## Rationale Quality (IMPORTANT)
 - Be honest about candidate quality in your rationale
@@ -222,7 +254,8 @@ Return ONLY valid JSON:
         )
         content = (response.choices[0].message.content or "").strip()
     except Exception as e:
-        print(f"  Decision LLM call failed: {e}")
+        if logger:
+            logger.log(f"Decision LLM call failed: {e}", "ERROR")
         fallback = _choose_fallback(base_list)
         return { 'next_action': fallback }
 
@@ -254,9 +287,10 @@ Return ONLY valid JSON:
                 reasoning=rationale or chosen.reasoning,
                 text=chosen.text,
             )
-        print(f"  Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
-        if rationale:
-            print(f"  Rationale: {rationale}")
+        if logger:
+            logger.log(f"Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'", "INFO")
+            if rationale:
+                logger.log(f"Rationale: {rationale}", "INFO")
         
         if logger:
             logger.log_dict("Chosen Action", {
@@ -271,7 +305,8 @@ Return ONLY valid JSON:
         
         return { 'next_action': chosen }
 
-    print(f"  Invalid index {idx}; using fallback")
+    if logger:
+        logger.log(f"Invalid index {idx}; using fallback", "WARNING")
     fallback = _choose_fallback(base_list)
     return { 'next_action': fallback }
 

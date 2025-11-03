@@ -50,7 +50,7 @@ Based on actual measurements:
 - Each scoring call: **22K tokens** (with current format)
 - With minimal format: **10K tokens** per call
 - **Savings: ~12K tokens per scoring call**
-- At $0.01 per 1K input tokens (gpt-4o): **$0.12 savings per scoring call**
+- At $0.01 per 1K input tokens (gpt-4.1): **$0.12 savings per scoring call**
 - For a 15-step task: **~$1.80 savings** just from formatting optimization
 
 ## 3. 🔥 HIGH: Redundant Data in Decision Node

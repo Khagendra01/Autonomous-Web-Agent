@@ -126,7 +126,9 @@ def run_task(
         'screenshot_bytes': None,
         'dom_snapshot': None,
         'interactable_elements': [],
+        'prev_interactable_count': 0,
         'errors': [],
+        'active_context': None,
         'action_history': [],
         'screenshots': [],
         'scored_actions': [],
@@ -135,6 +137,14 @@ def run_task(
         'error': None,
         'stuck_count': 0,
         'tried_actions_by_url': {},
+        'prev_interactable_elements': None,
+        'sub_tasks': [],
+        'current_sub_task_index': 0,
+        'requirements': {},
+        'predicate_truths': {},
+        'execution_step_lock': None,
+        'last_evaluated_step': None,
+        'target_entity': None,
     }
     
     # Create and run workflow

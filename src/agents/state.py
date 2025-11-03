@@ -29,7 +29,9 @@ class AgentState(TypedDict):
     screenshot_bytes: Optional[bytes]
     dom_snapshot: Optional[Dict[str, Any]]
     interactable_elements: List[Dict[str, Any]]
+    prev_interactable_count: int
     errors: List[str]
+    active_context: Optional[Dict[str, Any]]
     
     # History
     action_history: List[Dict[str, Any]]
@@ -50,4 +52,22 @@ class AgentState(TypedDict):
     
     # Temporal tracking for element detection
     prev_interactable_elements: Optional[List[Dict[str, Any]]]  # Elements from previous observation
+    
+    # Sub-task tracking (for multi-step goals)
+    sub_tasks: Optional[List[Dict[str, Any]]]  # Parsed sub-tasks with completion tracking
+    current_sub_task_index: int  # Which sub-task we're currently working on
+
+    # Declarative requirements and gating
+    # Generic requirement predicates normalized by upstream nodes (e.g., parser/bootstrap/evaluator)
+    # Examples: { "titleSet": true, "assigneeSet": true, "projectSet": true }
+    requirements: Dict[str, bool]
+    # Deterministic predicate truths observed from the DOM (persisted UI state)
+    predicate_truths: Dict[str, bool]
+    # Internal locks / cadence controls
+    execution_step_lock: Optional[int]  # Prevent duplicate execute within same step
+    last_evaluated_step: Optional[int]  # Prevent duplicate evaluate within same step
+
+    # Target entity anchoring (object permanence across steps)
+    # Example for issues: { "id": "ALP-7", "title": "Clean up the UI", "url": "/issue/ALP-7/..." }
+    target_entity: Optional[Dict[str, Any]]
 

@@ -2,6 +2,7 @@ from typing import Any, Dict, Optional, List
 import json
 
 from ..state import AgentState
+from ..utils.logger import get_logger
 from ..utils.json_parser import extract_json_payload
 from .common import client
 
@@ -38,9 +39,7 @@ def _build_dynamic_evaluation_context(state: AgentState, last_action: Optional[D
         hints.append(f"⚠️ ERRORS PRESENT: Validation or runtime errors detected ({len(errors)} errors). Task likely incomplete until errors are resolved.")
     
     # Context: Step count indicators
-    if step_count < 3:
-        hints.append("🔍 EARLY STAGE: Very few steps taken. Unless goal is trivial, task is likely incomplete. Look for initial progress indicators.")
-    elif step_count > 20:
+    if step_count > 20:
         hints.append("⚠️ MANY STEPS: High step count suggests either complex task or potential inefficiency. Re-evaluate if goal requires this many steps or if agent is stuck.")
     
     # Context: UI state indicators
@@ -57,16 +56,161 @@ def _build_dynamic_evaluation_context(state: AgentState, last_action: Optional[D
     return '\n'.join(hints) if hints else ""
 
 
+def _build_sub_task_verification_section(sub_tasks: List[Dict[str, Any]]) -> str:
+    """Build the sub-task verification section for the evaluation prompt."""
+    sub_task_summary = []
+    for st in sub_tasks:
+        sub_task_summary.append({
+            "id": st.get('id', ''),
+            "description": st.get('description', ''),
+            "type": st.get('type', ''),
+            "status": st.get('status', 'pending'),
+            "required_context": st.get('required_context', 'any'),
+            "verification_patterns": st.get('verification_patterns', []),
+            "evidence": st.get('evidence', [])
+        })
+    return "## SUB-TASK VERIFICATION\nBelow are the parsed sub-tasks that must ALL be completed. Verify each one separately:\n" + json.dumps(sub_task_summary, indent=2) + "\n\n"
+
+
+def _update_sub_task_evidence(
+    sub_tasks: List[Dict[str, Any]], 
+    action_history: List[Dict[str, Any]], 
+    current_url: str
+) -> List[Dict[str, Any]]:
+    """Update sub-task evidence based on action history. Does NOT auto-mark as complete - LLM evaluation decides."""
+    updated = []
+    
+    for task in sub_tasks:
+        task_copy = task.copy()
+        evidence = task_copy.get('evidence', [])
+        
+        # Check if task is already marked completed (by LLM evaluation)
+        if task_copy.get('status') == 'completed':
+            updated.append(task_copy)
+            continue
+        
+        # Check each action for matching verification patterns
+        required_context = task_copy.get('required_context', 'any')
+        verification_patterns = task_copy.get('verification_patterns', [])
+        
+        for action in action_history:
+            action_label = (action.get('label') or '').lower()
+            action_type = action.get('type', '')
+            action_url = action.get('url', '')  # Use URL where action occurred, not current URL
+            
+            # Check if action matches verification patterns
+            matches_pattern = False
+            if verification_patterns:
+                # Use the URL where the action actually occurred
+                combined_text = f"{action_label} {action_url}".lower()
+                matches_pattern = any(
+                    pattern.lower() in combined_text 
+                    for pattern in verification_patterns
+                )
+            
+            # Check if context matches using the URL where action occurred
+            context_matches = _check_context_match(required_context, action_url, action)
+            
+            # If pattern matches and context is correct, add evidence
+            # But don't auto-mark as complete - let LLM evaluation decide
+            if matches_pattern and context_matches:
+                # Check if this action is already in evidence
+                action_key = f"{action_type}|{action_label}"
+                existing = any(
+                    e.get('action_key') == action_key 
+                    for e in evidence
+                )
+                if not existing:
+                    evidence.append({
+                        'action_key': action_key,
+                        'action_type': action_type,
+                        'label': action_label,
+                        'url': action_url,  # Store the URL where action occurred
+                        'step': action_history.index(action) if action in action_history else -1
+                    })
+        
+        task_copy['evidence'] = evidence
+        # DO NOT auto-mark as completed - let LLM evaluation decide based on evidence
+        
+        updated.append(task_copy)
+    
+    return updated
+
+
+def _check_context_match(required_context: str, action_url: str, action: Dict[str, Any]) -> bool:
+    """Check if the URL where action occurred matches required context."""
+    if required_context == 'any':
+        return True
+    
+    if not action_url:
+        # If no URL stored, can't verify context - be conservative
+        return False
+    
+    url_lower = action_url.lower()
+    
+    if required_context == 'list_view':
+        # List views typically have patterns like /issues, /projects, /list, etc.
+        # Avoid detail views like /issue/123, /project/abc
+        list_patterns = ['/issues', '/projects', '/list', '/my-issues', '/active', '/team/']
+        detail_patterns = ['/issue/', '/project/', '/detail', '/view/']
+        
+        has_list_pattern = any(p in url_lower for p in list_patterns)
+        has_detail_pattern = any(p in url_lower for p in detail_patterns)
+        
+        # Must have list pattern AND not have detail pattern
+        return has_list_pattern and not has_detail_pattern
+    
+    elif required_context == 'detail_view':
+        # Detail views typically have /issue/123, /project/abc patterns
+        detail_patterns = ['/issue/', '/project/', '/detail', '/view/']
+        return any(p in url_lower for p in detail_patterns)
+    
+    elif required_context == 'modal':
+        # Modals are harder to detect from URL alone - URLs often don't change
+        # For now, if URL doesn't change but modal likely opened, we can't verify
+        # Return True to allow evidence collection, LLM will verify
+        return True
+    
+    elif required_context == 'form':
+        # Forms could be in modals or separate pages
+        # Return True to allow evidence collection, LLM will verify
+        return True
+    
+    return True
+
+
 def check_goal_node(state: AgentState) -> Dict[str, Any]:
     """Evaluate whether the goal is complete using LLM with robust, app-agnostic criteria."""
-    print(f"\n[CHECK GOAL] Evaluating goal completion")
-    print(f"  Goal: {state.get('goal', '')}")
-    print(f"  Steps taken: {state.get('step_count', 0)}")
+    logger = get_logger()
+    if logger:
+        logger.log("Evaluating goal completion", "INFO")
+        logger.log(f"Goal: {state.get('goal', '')}", "INFO")
+        logger.log(f"Steps taken: {state.get('step_count', 0)}", "INFO")
 
-    model_name = state.get('llm_model') or "gpt-4o"
+    # Prevent duplicate evaluation within the same step
+    step_now = int(state.get('step_count', 0))
+    last_eval = state.get('last_evaluated_step')
+    if isinstance(last_eval, int) and last_eval == step_now:
+        # Return current known status without re-evaluating
+        return {
+            'goal_reached': bool(state.get('goal_reached', False)),
+            'sub_tasks': state.get('sub_tasks') or [],
+            'current_sub_task_index': int(state.get('current_sub_task_index', 0)),
+            'last_evaluated_step': step_now,
+        }
+
+    model_name = state.get('llm_model') or "gpt-4.1"
+    
+    # Deterministic predicate check: pre-mark status_change sub-task complete if predicate truth observed
+    predicate_truths = state.get('predicate_truths') or {}
+    if predicate_truths:
+        existing_sub_tasks = state.get('sub_tasks') or []
+        for task in existing_sub_tasks:
+            if task.get('type') == 'status_change' and predicate_truths.get('statusIsDone', False):
+                task['status'] = 'completed'
     recent_actions = (state.get('action_history') or [])[-10:]
 
-    # Normalize action details for evaluation
+    # Normalize action details for evaluation (include URL for context verification)
     action_details: List[Dict[str, Any]] = []
     for a in recent_actions:
         action_details.append({
@@ -75,6 +219,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
             'text': a.get('text', ''),
             'score': a.get('score', 0),
             'reasoning': a.get('reasoning', ''),
+            'url': a.get('url', ''),  # CRITICAL: Include URL where action occurred for context verification
         })
 
     last_action = action_details[-1] if action_details else None
@@ -84,6 +229,13 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
 
     # Build dynamic context hints (Option 6)
     dynamic_hints = _build_dynamic_evaluation_context(state, last_action)
+    
+    # Get sub-tasks for verification
+    sub_tasks = state.get('sub_tasks') or []
+    
+    # Update sub-task evidence based on action history
+    if sub_tasks:
+        sub_tasks = _update_sub_task_evidence(sub_tasks, recent_actions, state.get('current_url', ''))
     
     # Get currently available scored actions from the scoring node
     # These represent actions that the scoring system identified as high-value for the goal
@@ -137,6 +289,66 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
             'submit_buttons': submit_buttons[:5] if submit_buttons else []  # Limit to top 5
         }
 
+    # Build conditional sections
+    step1_intro = "If sub-tasks are provided above, use them directly. Otherwise, " if not sub_tasks else ""
+    
+    step2_intro = "CRITICAL: For each sub-task provided above, verify it has specific evidence:\n1. Check if action history contains actions matching verification_patterns\n2. Verify actions happened in required_context (check URL patterns, element roles)\n3. Context mismatch = incomplete (e.g., filtering requires list_view, not detail_view)\n4. Example: \"filter issues\" sub-task with required_context=\"list_view\" cannot be satisfied by clicking \"In Progress\" on detail_view" if sub_tasks else "Check if the action history provides evidence for each required sub-task. Be specific:\n- Typing \"Softlight\" in a name field = evidence for \"enter name\" sub-task\n- Clicking \"assign to kgen\" = evidence for \"assign\" sub-task\n- BUT: clicking a dropdown that opens doesn't mean the selection was made - verify completion"
+    
+    step4_complete_1 = "ALL sub-tasks have status='completed' with evidence matching verification_patterns AND required_context" if sub_tasks else "All parsed sub-tasks have clear evidence in action history"
+    step4_complete_5 = "5. Each sub-task's evidence must be in the correct context (required_context matches where action occurred)\n" if sub_tasks else ""
+    
+    step4_incomplete_1 = "Any sub-task has status != 'completed' OR evidence doesn't match required_context OR verification_patterns not satisfied" if sub_tasks else "Any required sub-task lacks evidence in action history"
+    step4_incomplete_4 = "4. Context mismatch detected (e.g., filter operation attempted on detail_view instead of list_view)\n" if sub_tasks else ""
+    
+    # Build sub_task_completions JSON template separately to avoid f-string brace escaping issues
+    # CRITICAL: Make this REQUIRED not optional - LLM must return this
+    if sub_tasks:
+        task_ids_list = ', '.join([f'"{task.get("id", f"task_{i+1}")}"' for i, task in enumerate(sub_tasks)])
+        sub_task_completions_template = f',\n  "sub_task_completions": [{{"id": "task_1", "completed": true/false, "reason": "brief explanation"}}, ...]\nREQUIRED: Return completion status for ALL {len(sub_tasks)} sub-tasks with IDs: [{task_ids_list}]'
+    else:
+        sub_task_completions_template = ""
+    
+    # Build LAST ACTION pattern match check section for sub-tasks
+    last_action_check = ""
+    if sub_tasks and last_action:
+        last_label = (last_action.get('label') or '').lower()
+        matching_sub_tasks = []
+        for task in sub_tasks:
+            if task.get('status') != 'completed':
+                patterns = task.get('verification_patterns', [])
+                task_context = task.get('required_context', 'any')
+                action_url = last_action.get('url', '')
+                # Check if last action matches this task's patterns
+                matches_pattern = any(
+                    pattern.lower() in last_label 
+                    for pattern in patterns
+                )
+                # Check context match
+                context_matches = _check_context_match(task_context, action_url, last_action)
+                if matches_pattern and context_matches:
+                    matching_sub_tasks.append({
+                        'id': task.get('id', ''),
+                        'description': task.get('description', ''),
+                        'matched_patterns': [p for p in patterns if p.lower() in last_label]
+                    })
+        
+        if matching_sub_tasks:
+            last_action_check = f"""## ⚡ LAST ACTION PATTERN MATCH CHECK (CRITICAL - CHECK FIRST)
+The MOST RECENT ACTION was: {last_action.get('type', '')} on '{last_action.get('label', '')}'
+
+This action MATCHES verification patterns for the following sub-task(s):
+{json.dumps(matching_sub_tasks, indent=2)}
+
+**RULES:**
+1. If last action matches a sub-task's verification_patterns AND happened in required_context → that sub-task is COMPLETE
+2. Mark matching sub-task(s) as COMPLETED in your sub_task_completions array immediately
+3. The action sequence IS the evidence - DO NOT wait for visual proof
+4. Example: If last action was "click 'In Progress 3 issues'" and sub-task has verification_patterns=["inprogress", "filter"] → SUB-TASK COMPLETE
+
+**This is the PRIMARY completion signal - use it first before other checks.**
+
+"""
+    
     # Build structured prompt with clear sections (Option 2)
     prompt = f"""# ROLE & OBJECTIVE
 You are an autonomous web agent's evaluation module. Your task is to assess whether the user's goal has been completed based on action history, current UI state, goal alignment, and available next actions.
@@ -150,8 +362,7 @@ Steps Taken: {state.get('step_count', 0)}
 Errors/Validation Issues:
 {json.dumps(state.get('errors', [])) if state.get('errors') else "None"}
 
-{"## DYNAMIC CONTEXT HINTS" + chr(10) + dynamic_hints + chr(10) if dynamic_hints else ""}
-# ACTION HISTORY
+{last_action_check}{"## DYNAMIC CONTEXT HINTS\n" + dynamic_hints + "\n" if dynamic_hints else ""}# ACTION HISTORY
 
 Most Recent Action:
 {json.dumps(last_action) if last_action else "None"}
@@ -167,19 +378,16 @@ These are actions that the scoring system identified as valuable for achieving t
 UI State Summary:
 {json.dumps(ui_state_summary) if ui_state_summary else "No interactable elements available"}
 
-# EVALUATION METHODOLOGY
+{_build_sub_task_verification_section(sub_tasks) if sub_tasks else ""}# EVALUATION METHODOLOGY
 
 ## Step 1: Parse Goal Requirements
-First, analyze the goal and instruction to identify ALL required sub-tasks/components. For example:
+{step1_intro}Analyze the goal and instruction to identify ALL required sub-tasks/components. For example:
 - "create a new project called Softlight" → requires: [open project creation, enter name "Softlight", submit/create the project]
 - "create issue and assign to kgen" → requires: [create issue, assign to kgen]
 - "change name to kgen" → requires: [navigate to profile/settings, change name field to "kgen", save changes]
 
 ## Step 2: Verify Action History Against Requirements
-Check if the action history provides evidence for each required sub-task. Be specific:
-- Typing "Softlight" in a name field = evidence for "enter name" sub-task
-- Clicking "assign to kgen" = evidence for "assign" sub-task
-- BUT: clicking a dropdown that opens doesn't mean the selection was made - verify completion
+{step2_intro}
 
 ## Step 3: Check for Remaining High-Scoring Actions
 If there are available high-scoring actions (score 8+) that:
@@ -194,15 +402,15 @@ For example:
 
 ## Step 4: Completion Decision
 Task is COMPLETE only if:
-1. All parsed sub-tasks have clear evidence in action history
+1. {step4_complete_1}
 2. No high-scoring actions (8+) remain that align with incomplete sub-tasks
 3. No validation errors present
 4. The workflow logically suggests completion (not mid-process)
-
-Task is INCOMPLETE if:
-1. Any required sub-task lacks evidence in action history
+{step4_complete_5}Task is INCOMPLETE if:
+1. {step4_incomplete_1}
 2. High-scoring actions (8+) exist that align with remaining goal requirements
 3. The workflow appears mid-process (e.g., form filled but not submitted, dropdown opened but not selected)
+{step4_incomplete_4}
 
 ## Auto-Save vs Explicit Submission (IMPORTANT)
 - Many modern apps auto-save: absence of explicit submit does not always imply incompletion
@@ -222,13 +430,26 @@ Task is INCOMPLETE if:
 - If incomplete, identify which sub-tasks are missing and what high-scoring actions address them
 - Be specific, not generic
 
+{"## SUB-TASK COMPLETION EVALUATION (CRITICAL - MANDATORY)" + chr(10) + "You MUST evaluate EACH sub-task individually. Mark sub-task as COMPLETED based on pattern matching against its own verification criteria." if sub_tasks else ""}
+{"### Completion Detection (Pattern Matching):" if sub_tasks else ""}
+{"For each sub-task, check:" if sub_tasks else ""}
+{"1. Do actions in action history contain labels/patterns matching the sub-task's verification_patterns? (case-insensitive, partial matches count)" if sub_tasks else ""}
+{"2. Did those matching actions occur in the sub-task's required_context? (check 'url' field in action history - list_view, detail_view, etc.)" if sub_tasks else ""}
+{"3. If both conditions met → MARK COMPLETE immediately. No visual proof needed - the action sequence IS the evidence." if sub_tasks else ""}
+{"### General Completion Logic:" if sub_tasks else ""}
+{"- Each sub-task has its own verification_patterns that were designed to identify completion" if sub_tasks else ""}
+{"- If actions match those patterns AND happened in required_context → the sub-task is done" if sub_tasks else ""}
+{"- DO NOT require seeing the result/state change - executing the matching actions is sufficient" if sub_tasks else ""}
+{"- DO NOT say 'evidence does not confirm' if patterns match - trust the pattern matching" if sub_tasks else ""}
+{"CRITICAL: You MUST return sub_task_completions array with completion status for ALL sub-tasks. Missing this field means sub-tasks never complete!" if sub_tasks else ""}
+
 # OUTPUT FORMAT
 Return ONLY valid JSON:
 {{
   "goal_reached": true/false,
   "reasoning": "2-4 sentence evidence-based explanation. First, list the parsed sub-tasks. Then verify each against action history. Then check if high-scoring actions remain for incomplete sub-tasks.",
   "confidence": 0.0-1.0,
-  "missing_steps": ["specific next steps if not complete, or empty array if complete"]
+  "missing_steps": ["specific next steps if not complete, or empty array if complete"]{sub_task_completions_template}
 }}"""
 
     system_message = """You are an autonomous web agent's evaluation module. Your role is to assess task completion based on action history, UI state, and goal alignment. You must be balanced: neither over-cautious nor premature in declaring completion. Return only valid JSON following the specified format."""
@@ -254,16 +475,96 @@ Return ONLY valid JSON:
     except Exception:
         confidence = 0.5
     missing_steps = result.get('missing_steps', []) or []
-
-    print(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
-    if reasoning:
-        print(f"  Reasoning: {reasoning}")
+    
+    # Debug: Log raw LLM response for sub-task completions
+    sub_task_completions = result.get('sub_task_completions', [])
+    if sub_tasks:
+        if logger:
+            logger.log(f"Sub-tasks evaluation: LLM returned {len(sub_task_completions)} completion decisions", "INFO")
+        if not sub_task_completions:
+            if logger:
+                logger.log("WARNING: LLM did not return sub_task_completions array! Sub-tasks won't be marked complete.", "WARNING")
+                logger.log(f"Raw result keys: {list(result.keys())}", "WARNING")
+    
+    # Process sub-task completions from LLM evaluation (LLM-driven) with persisted-outcome guardrails
+    if sub_tasks and sub_task_completions:
+        # LLM explicitly marked sub-tasks as complete - update their status
+        completion_map = {stc.get('id'): stc for stc in sub_task_completions}
+        for task in sub_tasks:
+            task_id = task.get('id', '')
+            if task_id in completion_map:
+                llm_decision = completion_map[task_id]
+                if llm_decision.get('completed', False):
+                    # Persisted-outcome check: require at least one strong signal
+                    # 1) URL shows entity detail (e.g., /issue/<ID>/) OR
+                    # 2) Action history contains confirming label (e.g., 'Currently kgen is assigned', 'Done')
+                    # 3) For filter tasks, the UI state may show fewer elements; skip strict check for now
+                    strong_signal = False
+                    try:
+                        url_now = (state.get('current_url') or '').lower()
+                        if any(p in url_now for p in ['/issue/', '/task/', '/project/']):
+                            strong_signal = True
+                        else:
+                            # scan recent action labels for confirmations
+                            for a in recent_actions[::-1]:
+                                lbl = (a.get('label') or '').lower()
+                                if any(t in lbl for t in ['currently kgen is assigned', 'done', 'completed', 'status updated']):
+                                    strong_signal = True
+                                    break
+                    except Exception:
+                        pass
+                    if strong_signal or task.get('type') == 'filter':
+                        task['status'] = 'completed'
+                        completion_reason = llm_decision.get('reason', '')
+                        if logger:
+                            logger.log(f"Sub-task '{task.get('description', '')}' marked complete: {completion_reason}", "SUCCESS")
+                    else:
+                        # Defer marking complete until we observe a persisted signal
+                        if logger:
+                            logger.log(f"Deferring completion for '{task.get('description', '')}' pending persisted signal", "INFO")
+                else:
+                    # LLM explicitly says not complete - ensure status reflects this
+                    if task.get('status') == 'completed':
+                        # Revert if incorrectly marked
+                        task['status'] = 'pending'
+    
+    # If goal is reached, mark all remaining sub-tasks as complete
+    if sub_tasks and goal_reached:
+        for task in sub_tasks:
+            if task.get('status') != 'completed' and task.get('evidence'):
+                task['status'] = 'completed'
+    
+    if logger:
+        logger.log(f"Goal reached: {goal_reached} (confidence: {confidence:.1%})", "INFO")
+        if reasoning:
+            logger.log(f"Reasoning: {reasoning}", "INFO")
     if missing_steps:
         try:
-            print(f"  Missing steps: {', '.join(map(str, missing_steps))}")
+            if logger:
+                logger.log(f"Missing steps: {', '.join(map(str, missing_steps))}", "INFO")
         except Exception:
-            print("  Missing steps: (unprintable)")
+            if logger:
+                logger.log("Missing steps: (unprintable)", "WARNING")
+    
+    # Update current_sub_task_index to point to first incomplete task
+    updated_sub_task_index = state.get('current_sub_task_index', 0)
+    if sub_tasks:
+        for i, task in enumerate(sub_tasks):
+            if task.get('status') != 'completed':
+                updated_sub_task_index = i
+                if i != state.get('current_sub_task_index', 0):
+                    if logger:
+                        logger.log(f"Active sub-task: {i+1}. {task.get('description', 'N/A')} [{task.get('type', 'N/A')}]", "INFO")
+                break
+        else:
+            # All completed
+            updated_sub_task_index = len(sub_tasks)
 
-    return { 'goal_reached': goal_reached }
+    return {
+        'goal_reached': goal_reached,
+        'sub_tasks': sub_tasks,
+        'current_sub_task_index': updated_sub_task_index,
+        'last_evaluated_step': step_now,
+    }
 
 

@@ -24,6 +24,12 @@ _page: Page | None = None
 
 DEBUG = str(os.environ.get('DEBUG') or '').strip().lower() in ['1', 'true', 'yes', 'on']
 
+# Simple throttle cache for expensive extra_items scan
+_last_extra_items_cache = {
+    'ts': 0.0,
+    'result': {'items': [], 'containerInfo': []},
+}
+
 
 def _visible_js() -> str:
     return (
@@ -92,10 +98,13 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 _pw = sync_playwright().start()
             user_dir = Path('chrome-user')
             user_dir.mkdir(exist_ok=True)
+            headless_env = str(os.environ.get('HEADLESS') or '').strip().lower()
+            headless_default = True
+            headless_flag = headless_default if headless_env == '' else (headless_env in ['1', 'true', 'yes', 'on'])
             _context = _pw.chromium.launch_persistent_context(
                 user_data_dir=str(user_dir),
                 channel="chrome",
-                headless=False,
+                headless=headless_flag,
                 args=[
                     "--disable-blink-features=AutomationControlled",
                     "--no-first-run",
@@ -104,7 +113,7 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             )
             _page = _context.new_page()
             _page.goto(start_url, wait_until='load')
-            _page.wait_for_timeout(1000)
+            # Avoid unconditional sleeps; rely on wait_until above
             return driver_pb2.InitResponse(ok=True, start_url=start_url)
         except Exception as e:
             return driver_pb2.InitResponse(ok=False, error=str(e))
@@ -114,8 +123,14 @@ class DriverService(driver_pb2_grpc.DriverServicer):
         url = _page.url
         a11y = _page.accessibility.snapshot(interesting_only=True)
         interactables = to_interactables(a11y or {})
+        # Throttled extra_items scan: reuse if called within 400ms
+        extra_items_result = None
         try:
-            extra_items_result = _page.evaluate(
+            now_ts = time.time()
+            if now_ts - float(_last_extra_items_cache.get('ts') or 0.0) < 0.4:
+                extra_items_result = _last_extra_items_cache.get('result')
+            if not extra_items_result:
+                extra_items_result = _page.evaluate(
                 """
                 () => {
                   function visible(el) {
@@ -240,7 +255,13 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                   return { items: results, containerInfo: containerInfo };
                 }
                 """
-            )
+                )
+                _last_extra_items_cache['ts'] = now_ts
+                # Ensure dict format
+                if isinstance(extra_items_result, dict):
+                    _last_extra_items_cache['result'] = extra_items_result
+                else:
+                    _last_extra_items_cache['result'] = {'items': (extra_items_result or []), 'containerInfo': []}
         except Exception:
             extra_items_result = {'items': [], 'containerInfo': []}
         
@@ -472,7 +493,7 @@ If no element matches well, return -1.
 Respond with ONLY a number (the idx or -1)."""
                 
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4.1",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 
@@ -567,6 +588,34 @@ Respond with ONLY a number (the idx or -1)."""
                 yield request.selector
 
         try:
+            if t == 'sequence':
+                # Execute a short sequence of clicks without another agent round-trip
+                if not request.selectors or len(request.selectors) < 2:
+                    return driver_pb2.ActResponse(ok=False, error='sequence requires at least two selectors')
+                for idx, sel in enumerate(request.selectors):
+                    try:
+                        # Reuse robust click logic by temporarily setting request.selector
+                        # Handle ARIA roles specially as in click path
+                        local_last_err = None
+                        if isinstance(sel, str) and (sel.startswith('role=option[name="') or sel.startswith('role=menuitem[name="') or sel.startswith('role=link[name="')):
+                            m = re.match(r'^role=(option|menuitem|link)\[name="(.+?)"\]$', sel)
+                            role_type = m.group(1) if m else ''
+                            desired_label = m.group(2) if m else ''
+                            if role_type and desired_label:
+                                if click_aria_element(ctx, role_type, desired_label, _page, debug=DEBUG):
+                                    continue
+                        # Default click
+                        ctx.locator(sel).first.wait_for(state='visible', timeout=8000)
+                        try:
+                            ctx.locator(sel).first.scroll_into_view_if_needed(timeout=800)
+                        except Exception:
+                            pass
+                        ctx.locator(sel).first.click(timeout=10000)
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                    except Exception as e:
+                        return driver_pb2.ActResponse(ok=False, error=f'sequence step {idx+1} failed: {e}')
+                return driver_pb2.ActResponse(ok=True)
+
             if t == 'click':
                 last_err = None
                 for sel in iter_selectors():
@@ -597,7 +646,8 @@ Respond with ONLY a number (the idx or -1)."""
                         except Exception:
                             pass
                         ctx.locator(sel).first.click(timeout=12000)
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
+                        # Short post-click settle when navigation is not expected
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(300)
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)
@@ -627,7 +677,7 @@ Respond with ONLY a number (the idx or -1)."""
                                 print(f"  [DEBUG] SmartLocate found: {smart_resp.selector} (strategy: {smart_resp.strategy})")
                             # Try the smart selector
                             ctx.locator(smart_resp.selector).first.click(timeout=5000)
-                            (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
+                            (_page if ctx is _page else ctx.page).wait_for_timeout(300)
                             return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         if DEBUG:
@@ -637,7 +687,7 @@ Respond with ONLY a number (the idx or -1)."""
             elif t == 'scroll':
                 delta = request.delta or 600
                 (_page if ctx is _page else ctx.page).mouse.wheel(0, delta)
-                (_page if ctx is _page else ctx.page).wait_for_timeout(200)
+                (_page if ctx is _page else ctx.page).wait_for_timeout(150)
                 return driver_pb2.ActResponse(ok=True)
             elif t == 'type' and request.text:
                 last_err = None
@@ -645,8 +695,8 @@ Respond with ONLY a number (the idx or -1)."""
                     try:
                         loc = ctx.locator(sel).first
                         loc.fill(str(request.text))
-                        # Wait longer after typing to allow autocomplete/dropdown to populate
-                        (_page if ctx is _page else ctx.page).wait_for_timeout(500)
+                        # Short pause to allow autocomplete/dropdown to populate
+                        (_page if ctx is _page else ctx.page).wait_for_timeout(300)
                         return driver_pb2.ActResponse(ok=True)
                     except Exception as e:
                         last_err = str(e)

@@ -18,8 +18,8 @@ python -m src.drivers.grpc_playwright_server
 BenchMark across the model:
 choosen GPT model because I had free credits from OPENAI CODEX HACKATHON
 GPT-5 -> take way too long just process IO, maybe of compute time of large parameter or its instances still not deployed as much as 4o
-gpt-4o -> does the task well however still slower
-gpt-4o-> is medium level does but sometime hallucinate or lack intelligience of gpt-5
-gpt-4o-mini-> bro looks like a boy in the war who mistake all the time
+gpt-4.1 -> does the task well however still slower
+gpt-4.1-> is medium level does but sometime hallucinate or lack intelligience of gpt-5
+gpt-4.1-mini-> bro looks like a boy in the war who mistake all the time
 
 Preferences -> Gpt4o/ 5-mini
