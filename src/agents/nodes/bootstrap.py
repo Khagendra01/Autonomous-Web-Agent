@@ -1,6 +1,5 @@
 from typing import Any, Dict, List
 import json
-import requests
 
 from ..state import AgentState
 from ..utils.logger import get_logger
@@ -105,8 +104,13 @@ Return ONLY a JSON object with:
         'app_name': app_name or 'WebApp',
         'base_url': base_url,
         'current_url': base_url,
-        'sub_tasks': sub_tasks,
-        'current_sub_task_index': 0,
+        # Initialize sub-task tracking safely; -1 indicates no active sub-task
+        'sub_tasks': sub_tasks if sub_tasks else [],
+        'current_sub_task_index': 0 if sub_tasks else -1,
+        # Minimal defaults to stabilize downstream nodes
+        'step_count': 0,
+        'errors': [],
+        'stuck_count': 0,
     }
 
 

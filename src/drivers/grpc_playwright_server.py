@@ -211,10 +211,35 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       const href = el.getAttribute('href') || '';
                       const type = el.getAttribute('type') || '';
                       const placeholder = el.getAttribute('placeholder') || '';
+                      const rect = el.getBoundingClientRect();
+                      const bbox = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+                      const inViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
+                      const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+                      const style = window.getComputedStyle(el);
+                      const opacity = parseFloat(style.opacity || '1');
+                      const pointerEvents = style.pointerEvents || '';
+                      const zIndex = style.zIndex || '';
+                      const aria = {
+                        selected: el.getAttribute('aria-selected'),
+                        checked: el.getAttribute('aria-checked'),
+                        expanded: el.getAttribute('aria-expanded'),
+                        pressed: el.getAttribute('aria-pressed'),
+                        current: el.getAttribute('aria-current'),
+                        required: el.getAttribute('aria-required'),
+                        invalid: el.getAttribute('aria-invalid'),
+                        haspopup: el.getAttribute('aria-haspopup')
+                      };
+                      let tabindexAttr = el.getAttribute('tabindex');
+                      let tabIndexNum = null;
+                      if (tabindexAttr !== null && tabindexAttr !== undefined && tabindexAttr !== '') {
+                        const n = parseInt(tabindexAttr, 10);
+                        if (!Number.isNaN(n)) tabIndexNum = n;
+                      }
+                      const focus = { tabindex: tabIndexNum, focusable: ((typeof el.tabIndex === 'number' && el.tabIndex >= 0) || (tabIndexNum !== null && tabIndexNum >= 0)), contentEditable: !!el.isContentEditable };
                       const key = role + '|' + name;
                       if (candidates.has(key)) return;
                       candidates.add(key);
-                      results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
+                      results.push({ role, name, disabled, tag, classes, id, href, type, placeholder, bbox, inViewport, center, opacity, pointerEvents, zIndex, aria, focus });
                     });
                   }
                   // 2) Inputs/textareas/contenteditable/comboboxes across the page
@@ -245,10 +270,35 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                         }
                         if (!role || !name) return;
                         name = name.replace(/\\s+/g, ' ').trim();
+                        const rect = el.getBoundingClientRect();
+                        const bbox = { x: Math.round(rect.left), y: Math.round(rect.top), width: Math.round(rect.width), height: Math.round(rect.height) };
+                        const inViewport = rect.top >= 0 && rect.left >= 0 && rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) && rect.right <= (window.innerWidth || document.documentElement.clientWidth);
+                        const center = { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
+                        const style = window.getComputedStyle(el);
+                        const opacity = parseFloat(style.opacity || '1');
+                        const pointerEvents = style.pointerEvents || '';
+                        const zIndex = style.zIndex || '';
+                        const aria = {
+                          selected: el.getAttribute('aria-selected'),
+                          checked: el.getAttribute('aria-checked'),
+                          expanded: el.getAttribute('aria-expanded'),
+                          pressed: el.getAttribute('aria-pressed'),
+                          current: el.getAttribute('aria-current'),
+                          required: el.getAttribute('aria-required'),
+                          invalid: el.getAttribute('aria-invalid'),
+                          haspopup: el.getAttribute('aria-haspopup')
+                        };
+                        let tabindexAttr = el.getAttribute('tabindex');
+                        let tabIndexNum = null;
+                        if (tabindexAttr !== null && tabindexAttr !== undefined && tabindexAttr !== '') {
+                          const n = parseInt(tabindexAttr, 10);
+                          if (!Number.isNaN(n)) tabIndexNum = n;
+                        }
+                        const focus = { tabindex: tabIndexNum, focusable: ((typeof el.tabIndex === 'number' && el.tabIndex >= 0) || (tabIndexNum !== null && tabIndexNum >= 0)), contentEditable: !!el.isContentEditable };
                         const key = role + '|' + name;
                         if (candidates.has(key)) return;
                         candidates.add(key);
-                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
+                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder, bbox, inViewport, center, opacity, pointerEvents, zIndex, aria, focus });
                       });
                     } catch(e) {}
                   }
@@ -301,6 +351,14 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             href = it.get('href', '')
             elem_type = it.get('type', '')
             placeholder = it.get('placeholder', '')
+            bbox = it.get('bbox') or {}
+            in_viewport = bool(it.get('inViewport'))
+            center = it.get('center') or {}
+            opacity = it.get('opacity')
+            pointer_events = it.get('pointerEvents') or ''
+            z_index = it.get('zIndex') or ''
+            aria = it.get('aria') or {}
+            focus = it.get('focus') or {}
             
             if not role or not name:
                 continue
@@ -320,13 +378,65 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             if role == 'option':
                 added_options.append({'role': role, 'name': name, 'normalized': label_out, 'selector': f'role={role}[name="{label_out}"]'})
             
+            # Encode extra metadata as class tokens to avoid proto changes
+            try:
+                bx = int(bbox.get('x') or 0); by = int(bbox.get('y') or 0); bw = int(bbox.get('width') or 0); bh = int(bbox.get('height') or 0)
+            except Exception:
+                bx = by = bw = bh = 0
+            meta_tokens = [
+                f"__bbox_{bx}_{by}_{bw}_{bh}",
+                f"__vp_{1 if in_viewport else 0}",
+                f"__cx_{int(center.get('x') or 0)}",
+                f"__cy_{int(center.get('y') or 0)}",
+            ]
+            if pointer_events:
+                meta_tokens.append(f"__pe_{pointer_events}")
+            if isinstance(opacity, (int, float)):
+                try:
+                    meta_tokens.append(f"__op_{round(float(opacity), 2)}")
+                except Exception:
+                    pass
+            if z_index:
+                meta_tokens.append(f"__zi_{z_index}")
+            for k in ('selected','checked','expanded','pressed','current','required','invalid','haspopup'):
+                v = aria.get(k)
+                if v is not None and str(v) != '':
+                    meta_tokens.append(f"__aria_{k}_{str(v).lower()}")
+            # Focus tokens
+            tabindex = focus.get('tabindex')
+            if tabindex is not None:
+                try:
+                    meta_tokens.append(f"__tb_{int(tabindex)}")
+                except Exception:
+                    pass
+            if 'focusable' in focus:
+                meta_tokens.append(f"__fc_{1 if focus.get('focusable') else 0}")
+            if focus.get('contentEditable'):
+                meta_tokens.append("__ce_1")
+
+            # Stable element key
+            try:
+                import hashlib as _hashlib
+                ek_basis = json.dumps({
+                    'tag': tag,
+                    'id': elem_id,
+                    'classes': (classes or [])[:6],
+                    'bbox': {'x': bx, 'y': by, 'w': bw, 'h': bh},
+                    'role': role,
+                    'label': label_out,
+                }, separators=(",", ":"), ensure_ascii=False)
+                ek = _hashlib.md5(ek_basis.encode('utf-8')).hexdigest()[:12]
+                meta_tokens.append(f"__ek_{ek}")
+            except Exception:
+                pass
+
             interactables.append({
                 'role': role, 
                 'label': label_out, 
                 'selector': f'role={role}[name="{label_out}"]', 
                 'disabled': disabled,
                 'tag': tag,
-                'classes': classes,
+                'classes': classes + meta_tokens,
                 'id': elem_id,
                 'href': href,
                 'type': elem_type,

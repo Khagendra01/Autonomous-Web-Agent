@@ -399,6 +399,26 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
         # Slight boost if we have selector memory for this label
         if label and isinstance(selector_registry, dict) and selector_registry.get(label):
             base += 0.8
+        # Enriched visual/meta signals from observe
+        try:
+            if elem.get('inViewport') is True:
+                base += 0.8
+            bbox = elem.get('bbox') or {}
+            w = float(bbox.get('width') or 0)
+            h = float(bbox.get('height') or 0)
+            area = w * h
+            # Prefer reasonably sized tappable targets
+            if area >= 400 and area <= 250000:
+                base += 0.5
+            opacity = elem.get('opacity')
+            if isinstance(opacity, (int, float)) and opacity < 0.15:
+                base -= 1.0
+            pe = (elem.get('pointerEvents') or '').lower()
+            if pe in ('none', 'auto'):
+                # Penalize none; slight neutral for auto
+                base += (-1.0 if pe == 'none' else 0.0)
+        except Exception:
+            pass
         return base
 
     # Stratified quotas by role type (adjusted by available max)
