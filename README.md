@@ -34,6 +34,8 @@ python -m src.agents.runner "go to issues and filter by inprogress and change th
 
 
 
+
+
 BenchMark across the model:
 choosen GPT model
 GPT-5 -> take way too long just process IO, maybe of compute time of large parameter or its instances still not deployed as much as 4o

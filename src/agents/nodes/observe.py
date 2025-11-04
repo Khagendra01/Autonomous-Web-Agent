@@ -15,7 +15,13 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[OBSERVE] Step {step}")
     
     # Get current page state (gRPC)
-    observe = driver_client.observe()
+    try:
+        observe = driver_client.observe()
+    except Exception as e:
+        error_msg = str(e)
+        if "not initialized" in error_msg.lower() or "init" in error_msg.lower():
+            raise RuntimeError(f"Browser not initialized. Bootstrap may have failed. Original error: {error_msg}")
+        raise
     # Capture screenshot
     screenshot_bytes = driver_client.screenshot()
     
@@ -104,11 +110,13 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
     
     # Show preview of LLM format
     preview_lines = llm_representation.split('\n')[:5]
-    if len(preview_lines) < len(llm_representation.split('\n')):
+    total_lines = len(llm_representation.split('\n'))
+    if len(preview_lines) < total_lines:
         print(f"  LLM format preview:")
         for line in preview_lines:
             print(f"    {line}")
-        print(f"    ... ({len(llm_representation.split('\n')) - 5} more lines)")
+        remaining = total_lines - 5
+        print(f"    ... ({remaining} more lines)")
     else:
         print(f"  LLM format:")
         for line in preview_lines:

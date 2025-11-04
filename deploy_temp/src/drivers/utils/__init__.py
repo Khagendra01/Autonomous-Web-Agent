@@ -1,0 +1,23 @@
+"""Utilities for the Playwright driver server.
+
+This package contains helper modules for:
+- Trap element detection (rich text editor helpers)
+- Selector normalization (keyboard hint removal)
+- ARIA selector handling (dropdowns, menus, options)
+"""
+
+from .trap_finder import is_trap_element
+from .selector_normalizer import normalize_label, extract_label_from_selector
+from .aria_selector import find_aria_element, click_aria_element
+from .selector_generator import generate_best_selector, extract_short_label
+
+__all__ = [
+    'is_trap_element',
+    'normalize_label',
+    'find_aria_element',
+    'click_aria_element',
+    'extract_label_from_selector',
+    'generate_best_selector',
+    'extract_short_label',
+]
+

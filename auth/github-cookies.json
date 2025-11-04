@@ -1,0 +1,380 @@
+[
+  {
+    "name": "__utma",
+    "value": "61317162.1474262351.1761832966.1761832966.1761832966.1",
+    "domain": ".workspace.google.com",
+    "path": "/intl/en-US/gmail/",
+    "expires": 1796393076.697596,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utmb",
+    "value": "61317162.0.10.1761832966",
+    "domain": ".workspace.google.com",
+    "path": "/intl/en-US/gmail/",
+    "expires": 1761834876,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utmz",
+    "value": "61317162.1761832966.1.1.utmcsr=(direct)|utmccn=(direct)|utmcmd=(none)",
+    "domain": ".workspace.google.com",
+    "path": "/intl/en-US/gmail/",
+    "expires": 1777601076,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__Host-GAPS",
+    "value": "1:kt3hz8Z33a4OmW4h4qf3Jh0QsPyi3Q:wsHt_TDEh_tvKlCQ",
+    "domain": "accounts.google.com",
+    "path": "/",
+    "expires": 1796385794.752811,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "session:8c28228c-fee0-49ad-abe2-95eec93bc2af",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2IjoyLCJzZXNzaW9uSWQiOiJkOGY2NDQ3ZC1lY2NkLTRjYWUtYTU5Ny0wZjc3YjEwOWI2YzkiLCJ1c2VyQWNjb3VudElkIjoiOGMyODIyOGMtZmVlMC00OWFkLWFiZTItOTVlZWM5M2JjMmFmIiwiY3JlYXRlZEF0IjoiMjAyNS0xMC0zMFQxMjowNDozNS42ODdaIiwiaWF0IjoxNzYxODI1ODc1fQ.8rZ9lGoO8-iOa2gRa3deWkrexQybLgknrQ91drYlhrQ",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793396434.406576,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Strict"
+  },
+  {
+    "name": "loggedIn",
+    "value": "1",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793396484.618533,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "lastUsedLogin",
+    "value": "google",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793398177.659882,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Strict"
+  },
+  {
+    "name": "uploadsSig:8c28228c-fee0-49ad-abe2-95eec93bc2af",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyQWNjb3VudElkIjoiOGMyODIyOGMtZmVlMC00OWFkLWFiZTItOTVlZWM5M2JjMmFmIiwib3JnYW5pemF0aW9uSWRzIjpbImUzZDEwMTlmLTAyNTktNGZmOC05MWIyLTU1ZDllYjM0ZTQyZSJdLCJpYXQiOjE3NjE4Mjc2MTksImV4cCI6MTc2MjQzMjQxOX0.551Nui01g94ML4kcqYdQOFEWyCQ9jyYhQXs7wnUB11E",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1762432417.877271,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "GPS",
+    "value": "1",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1761833666.158269,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "VISITOR_INFO1_LIVE",
+    "value": "aRTh7HHw59o",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1777384376.012703,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "VISITOR_PRIVACY_METADATA",
+    "value": "CgJVUxIEGgAgWQ%3D%3D",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1777384376.012754,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "__Secure-ROLLOUT_TOKEN",
+    "value": "CL2-7bm9o4DhPBCP5vWUh8yQAxi-36WVh8yQAw%3D%3D",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1777383866.919595,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://youtube.com",
+    "_crHasCrossSiteAncestor": false
+  },
+  {
+    "name": "PREF",
+    "value": "tz=America.New_York",
+    "domain": ".youtube.com",
+    "path": "/",
+    "expires": 1796392377.025417,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_gcl_au",
+    "value": "1.1.90735502.1761832966",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1769608966,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utma",
+    "value": "61317162.1474262351.1761832966.1761832966.1761832966.1",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1796393078.538103,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utmz",
+    "value": "61317162.1761832966.1.1.utmcsr=(direct)|utmccn=(direct)|utmcmd=(none)",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1777601078,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utmt_UA-18073-1",
+    "value": "1",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1761833566,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "receive-cookie-deprecation",
+    "value": "1",
+    "domain": ".doubleclick.net",
+    "path": "/",
+    "expires": 1777385078.632438,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None",
+    "partitionKey": "https://google.com",
+    "_crHasCrossSiteAncestor": true
+  },
+  {
+    "name": "IDE",
+    "value": "AHWqTUlpep-xdxRvGv5Jdop9JoldJX8SO8KLtW_lWHoWKtQDcxx9NDmP4ROmcKqA7xM",
+    "domain": ".doubleclick.net",
+    "path": "/",
+    "expires": 1796392966.572802,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "_ga",
+    "value": "GA1.1.718432480.1761832967",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1796393076.779413,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "NID",
+    "value": "526=fBGPCcTnTC5dyWULZTOFo_ENT8qFAOjCwfuIgKNRYvI16u1Pc0SF47qAuw_I8F9hoPzt0rd77x9pxWCpfmWQnyUDG5jDFCrL2rJyq-Q5HwrWS08IIdXKzBOfcYh89LFuj_sPeWPX6Q27EeDnbr-IU5j6kgaB0NxaJpF3IHwLCuv8C0_FqquTeQImWTyuaTYBhGBK8KVpR-l5Dg",
+    "domain": ".google.com",
+    "path": "/",
+    "expires": 1777636994.808403,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "APPS_MARKETING_SIGNALS",
+    "value": "source=",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1761836676,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__utmb",
+    "value": "61317162.1.9.1761833078537",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1761834878,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_ga_FWCBRW1RY8",
+    "value": "GS2.1.s1761832966$o1$g1$t1761833078$j11$l0$h0",
+    "domain": ".workspace.google.com",
+    "path": "/",
+    "expires": 1796393078.549964,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_octo",
+    "value": "GH1.1.184614510.1761833114",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": 1793369117.223014,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "cpu_bucket",
+    "value": "xlg",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "preferred_color_mode",
+    "value": "light",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "tz",
+    "value": "America%2FNew_York",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_device_id",
+    "value": "499cce624cc45325c24552d39655bc78",
+    "domain": "github.com",
+    "path": "/",
+    "expires": 1793369123.547613,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "saved_user_sessions",
+    "value": "52613596%3AXROZGwc1htlMWh0Gjeryj4kQ-LU7vdHV_-60ABD07rlphiia",
+    "domain": "github.com",
+    "path": "/",
+    "expires": 1769612959.478582,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "user_session",
+    "value": "XROZGwc1htlMWh0Gjeryj4kQ-LU7vdHV_-60ABD07rlphiia",
+    "domain": "github.com",
+    "path": "/",
+    "expires": 1763042959.47873,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "__Host-user_session_same_site",
+    "value": "XROZGwc1htlMWh0Gjeryj4kQ-LU7vdHV_-60ABD07rlphiia",
+    "domain": "github.com",
+    "path": "/",
+    "expires": 1763042959.478762,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Strict"
+  },
+  {
+    "name": "tz",
+    "value": "America%2FNew_York",
+    "domain": "github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "color_mode",
+    "value": "%7B%22color_mode%22%3A%22auto%22%2C%22light_theme%22%3A%7B%22name%22%3A%22light%22%2C%22color_mode%22%3A%22light%22%7D%2C%22dark_theme%22%3A%7B%22name%22%3A%22dark%22%2C%22color_mode%22%3A%22dark%22%7D%7D",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "logged_in",
+    "value": "yes",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": 1793369359.478857,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "dotcom_user",
+    "value": "Khagendra01",
+    "domain": ".github.com",
+    "path": "/",
+    "expires": 1793369359.478902,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "_gh_sess",
+    "value": "NVdYFf1LB%2FljvRiileDrs5mQC1TAlA9fkIVP5ew%2BYm6Bl%2Fngu6kFJIKG468A%2BR7o5aBgNX72hmnfPXGA0G57aRC%2B0uveKSeNZoVPrnWUIPFbcHbJIHFaiDeAaslGefJvn8hArt6OuuPcRRFEuasGoB025g37K4oaGXczpTgjXJ8ivcXD2Zaox0jo5fpl23cAUnQTU2rch7aX4v%2BAbAz4xsvzFDE2Dycb46E6EBj8IgpQ7i62OEQ8CuHl6edinPkpfnOKV%2FU7AZuGjG4Ig3qc7IJZUO%2BcGnkX%2Fz54iHXda4DjmsOvAWYErFZAMXaUNTVPubLGCTolpyid2T7CGuwpsWp9EOdkq3vWQYasYBQp8Q6n9qWBkIM8J0hPG4KHYgC4qJfrMa7BAWTSxbN%2BNXsyEotxkaNcqUJr1dMeqJyAVKb3QN%2BGtPJl9K03lm8O2JYQcsEaGGrxABqAgPkQo8U6ZSnJRlPdMgk%2BeLY5RYsqHPks6y%2Bs832xu5bBQK8OSnvhjNbmgjplUeUXUaFw71%2BTjs0Rw5DXbgkKFHR%2FvhsTAbkkEim%2FPCfgUKYXaCf4%2Bp7cSE6MQ6X%2FckBYZw8Wya1MLPYF2f7vKS4RX6RtI81y8I%2FCdW11%2BOrN0EBn0L3L3MGSjzEDdFRCxJ%2FegHNPNXdvRKqo6CNmueyt73IGwOFbDNDF1paUqlckl9eipj5vXTRDG4o3QkQaIGSdTbMwfjPurydFHSOHjeuAREdrU5lTmLe6oiVKlLdfAXuOzKEjCO2P%2Bm2G7o2W8O%2FlI9ScASk6dHzWOewm%2F3LNBaYBpNkBwuWxYCK4C4%2Bv29mbaZnlTFHmKbh6Gxem5Fz3%2BIPOOoNxHKkavE1CDS3e0ceBQqDvL%2BNxITH8HFwflhF3kQC%2FMjKlPwdBrLJ%2B2uaakE6roFpwPCzEN%2Bkd3w4I5%2FyWycQYr0kBIOTqlTiVvV04o%2FN6IybFUwuZ6YwiOeqMAaGGRPpdx9knBuiJpIO5tWzi2Pd6T%2FLbPVG9cDiEUsT%2B8Wbk4WiUUKjWbgADHxRvpo0qzEMbWPIJNy6hKEzaxqg95jg3Kn5G6WZxtvuRVz%2BBLt7BGlURO9BsqFnHXfr0oiqSlCftI8tJCTg8Mwkay6n637zQCOXRDTO1yGfyW77x5ElYK1KtRec5yDOlxTI6d5PJ3pygWFbNSpjZKo%2Ff%2FVe0Q%2FpkFmm8mu1PfY2l2Hz17VnCEhngQ7PV9A1%2FfD3MbFnxpD6sQ7W07hytEgjDEhNpHQ%3D%3D--TTp5NUPcb4x%2BRNQ1--5ZlHtHMFQtwtKlNOnZvOrg%3D%3D",
+    "domain": "github.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]

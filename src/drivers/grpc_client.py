@@ -82,5 +82,9 @@ class DriverClient:
             use_llm=use_llm
         )
         return self.stub.SmartLocate(req)
+    
+    def close(self) -> driver_pb2.CloseResponse:
+        """Close the browser and clean up resources."""
+        return self.stub.Close(driver_pb2.CloseRequest())
 
 

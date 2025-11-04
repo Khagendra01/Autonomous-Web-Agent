@@ -1,0 +1,62 @@
+[
+  {
+    "name": "__Host-GAPS",
+    "value": "1:kt3hz8Z33a4OmW4h4qf3Jh0QsPyi3Q:wsHt_TDEh_tvKlCQ",
+    "domain": "accounts.google.com",
+    "path": "/",
+    "expires": 1796385794.752811,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "NID",
+    "value": "526=GGzT2b5wgBqbquJdzON_YIoVSbXoYFn2Pb0ERYJoaMhwEijgZXxgfXdjFP27p7wpEMojAj8zSuvGLVJz8E2bTNEcwTEfApqnFPV2fUs4WHDtcs7A7hZ4Ylpttfd95lKeePCq8kwfZhEhPJOS8iHbcXYOjj05dyGDNz2fXnjV14yo6-dH23_jLK6ef2gO1gGZeHyW10PNns1y0w",
+    "domain": ".google.com",
+    "path": "/",
+    "expires": 1777636995.251401,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "lastUsedLogin",
+    "value": "email",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793396434.406463,
+    "httpOnly": false,
+    "secure": false,
+    "sameSite": "Strict"
+  },
+  {
+    "name": "session:8c28228c-fee0-49ad-abe2-95eec93bc2af",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ2IjoyLCJzZXNzaW9uSWQiOiJkOGY2NDQ3ZC1lY2NkLTRjYWUtYTU5Ny0wZjc3YjEwOWI2YzkiLCJ1c2VyQWNjb3VudElkIjoiOGMyODIyOGMtZmVlMC00OWFkLWFiZTItOTVlZWM5M2JjMmFmIiwiY3JlYXRlZEF0IjoiMjAyNS0xMC0zMFQxMjowNDozNS42ODdaIiwiaWF0IjoxNzYxODI1ODc1fQ.8rZ9lGoO8-iOa2gRa3deWkrexQybLgknrQ91drYlhrQ",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793396434.406576,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Strict"
+  },
+  {
+    "name": "uploadsSig:8c28228c-fee0-49ad-abe2-95eec93bc2af",
+    "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyQWNjb3VudElkIjoiOGMyODIyOGMtZmVlMC00OWFkLWFiZTItOTVlZWM5M2JjMmFmIiwib3JnYW5pemF0aW9uSWRzIjpbXSwiaWF0IjoxNzYxODI1OTI1LCJleHAiOjE3NjI0MzA3MjV9.4AkO5wtve2KbthKUI37_VWuK8OM_NXBgaSyo7tI5Flg",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1762430724.618443,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "loggedIn",
+    "value": "1",
+    "domain": ".linear.app",
+    "path": "/",
+    "expires": 1793396484.618533,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]

@@ -9,6 +9,7 @@ service Driver {
   rpc ScreenshotRegion(ScreenshotRegionRequest) returns (ScreenshotResponse);
   rpc Act(ActRequest) returns (ActResponse);
   rpc SmartLocate(SmartLocateRequest) returns (SmartLocateResponse);
+  rpc Close(CloseRequest) returns (CloseResponse);
 }
 
 message InitRequest { string app = 1; string url = 2; string cookies_path = 3; }
@@ -71,5 +72,8 @@ message SmartLocateResponse {
   string selector = 3;  // The working selector found
   string strategy = 4;  // Which strategy worked (for debugging)
 }
+
+message CloseRequest {}
+message CloseResponse { bool ok = 1; string error = 2; }
 
 

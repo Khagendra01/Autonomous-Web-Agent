@@ -62,7 +62,8 @@ Return ONLY a JSON object with:
         print(f"  ✓ Driver initialized at {base_url}")
     except Exception as e:
         print(f"  ❌ Driver init error: {e}")
-        return { 'error': str(e) }
+        # Raise exception to stop workflow - don't continue if browser isn't initialized
+        raise RuntimeError(f"Failed to initialize browser: {e}")
 
     return {
         'goal': normalized_goal,
