@@ -1,0 +1,20 @@
+[Unit]
+Description=Autonomous Web Agent - Flask Web Application
+After=network.target web-agent-driver.service
+Requires=web-agent-driver.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Autonomous-Web-Agent
+Environment="PATH=/home/ubuntu/Autonomous-Web-Agent/venv/bin"
+EnvironmentFile=/home/ubuntu/Autonomous-Web-Agent/.env
+ExecStart=/home/ubuntu/Autonomous-Web-Agent/venv/bin/python web_app.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+

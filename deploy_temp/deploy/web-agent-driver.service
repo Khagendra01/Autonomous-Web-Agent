@@ -1,0 +1,18 @@
+[Unit]
+Description=Autonomous Web Agent - gRPC Driver Server
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Autonomous-Web-Agent
+Environment="PATH=/home/ubuntu/Autonomous-Web-Agent/venv/bin"
+ExecStart=/home/ubuntu/Autonomous-Web-Agent/venv/bin/python -m src.drivers.grpc_playwright_server
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+
