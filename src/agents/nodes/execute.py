@@ -53,22 +53,69 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
             logger.warning(f"Index not found in selector_map", {"index": action.index})
     
     # Special handling for autocomplete: clicking on role=option elements directly doesn't work reliably
-    # Always use keyboard navigation (Enter) instead of clicking autocomplete options
+    # BUT only treat role=option as autocomplete when it appears after typing in a combobox/textbox
+    # Menu items can also be role=option but should be clicked normally
     use_keyboard_for_autocomplete = False
     
     if action.action_type == 'click' and selector:
-        # Check if this is a click on a role=option element (autocomplete option)
         element_role = selector_map.get(action.index, {}).get('role', '').lower() if action.index else ''
-        is_option_click = (
+        
+        # Check if this is likely an autocomplete option (not a menu item)
+        is_likely_option = (
             'role=option' in selector.lower() or 
             element_role == 'option' or
             selector.startswith('#lui_')  # Asana autocomplete options use #lui_ IDs
         )
         
-        if is_option_click:
-            # ALWAYS use keyboard navigation for role=option clicks (they don't work reliably when clicked directly)
-            use_keyboard_for_autocomplete = True
-            print(f"  🔄 Detected autocomplete option click: using keyboard navigation (type + Enter) instead of clicking option")
+        if is_likely_option:
+            # Only treat as autocomplete if:
+            # 1. Previous action was typing in a combobox/textbox, OR
+            # 2. It's a known autocomplete pattern (Asana #lui_ IDs), OR
+            # 3. The element has combobox-related attributes
+            
+            is_autocomplete_context = False
+            
+            # Check 1: Previous action was typing in a combobox/textbox
+            action_history = state.get('action_history', [])
+            if action_history:
+                last_action = action_history[-1]
+                if last_action.get('type') == 'type':
+                    last_label = (last_action.get('label') or '').lower()
+                    last_selector = (last_action.get('selector') or '').lower()
+                    # Check if previous typing was in a combobox or autocomplete field
+                    if any(keyword in last_label or keyword in last_selector for keyword in 
+                           ['combobox', 'autocomplete', 'type the name', 'recipient', 'to:', '@']):
+                        is_autocomplete_context = True
+                elif last_action.get('type') == 'click':
+                    # If previous action was clicking a combobox, the options that appear are dropdown options
+                    # These should be clicked normally (not keyboard navigation)
+                    last_label = (last_action.get('label') or '').lower()
+                    last_selector = (last_action.get('selector') or '').lower()
+                    if 'combobox' in last_label or 'combobox' in last_selector or 'change project' in last_label or 'change assignee' in last_label:
+                        # This is a dropdown option after clicking combobox - click normally, NOT autocomplete
+                        is_autocomplete_context = False
+            
+            # Check 2: Known autocomplete patterns
+            if selector.startswith('#lui_'):
+                is_autocomplete_context = True
+            
+            # Check 3: Element is in a combobox context (check parent/ancestor hints)
+            element_info = selector_map.get(action.index, {}) if action.index else {}
+            element_label = (element_info.get('label', '') or '').lower()
+            # Menu items typically have descriptive labels, autocomplete options are usually names/values
+            # If it's in a menu context (has menu-like parent), don't treat as autocomplete
+            is_in_menu = any(keyword in element_label for keyword in ['settings', 'invite', 'download', 'switch', 'log out'])
+            
+            if is_autocomplete_context and not is_in_menu:
+                # Use keyboard navigation for autocomplete options
+                use_keyboard_for_autocomplete = True
+                print(f"  🔄 Detected autocomplete option click (after typing in combobox): using keyboard navigation instead of clicking")
+            elif is_in_menu:
+                # Menu item with role=option - click normally
+                print(f"  ℹ️  Detected menu item with role=option: using normal click (not autocomplete)")
+            else:
+                # Unknown context - default to clicking (menu items are more common than autocomplete)
+                print(f"  ℹ️  role=option element without clear autocomplete context: using normal click")
     
     # Build action payload
     payload = {

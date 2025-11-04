@@ -109,6 +109,14 @@ CRITICAL - Form completion awareness:
 - If fields are already filled (see above), do NOT return actions for those fields again.
 - Example: For a message form, you should identify: recipient field, subject field, AND message body field - return actions for all unfilled ones.
 
+CRITICAL - Message body/description field detection:
+- Message body fields may appear as role=document, role=textbox, or contenteditable divs with labels like "Edit message draft", "Write a message", "Message", "Description", "Body", "Comments", etc.
+- If you see a message composition interface (message form, issue creation, task creation, etc.), you MUST check if the message body/description field has content.
+- If the message body field is empty or only has placeholder text, you MUST score typing into it as HIGH PRIORITY (score 8-10).
+- Do NOT prioritize formatting buttons, emoji buttons, or other optional UI controls if the message body field is still empty.
+- The message body field is typically the LARGEST text input area in a form - look for role=document or large textarea/div elements with labels indicating message/body/description.
+- Only after the message body has content should you consider other actions like formatting or sending.
+
 CRITICAL - Autocomplete/Combobox behavior:
 - If you see a combobox field (role=combobox or role=textbox with "type the name" or similar autocomplete hints) and autocomplete options (role=option) are visible in the DOM:
   → After typing in the combobox, you MUST click one of the autocomplete options (role=option) to actually select the value.
@@ -116,6 +124,15 @@ CRITICAL - Autocomplete/Combobox behavior:
   → If autocomplete options are visible (especially ones matching the goal, like email addresses), clicking the matching option is the HIGHEST PRIORITY action (score 10).
   → Do NOT score typing the same value again in a combobox field that was just typed in - instead, click the autocomplete option.
   → Example: If "type on 'Type the name...' (typed: 'kgen4295@gmail.com')" was just done, and you see role=option elements with "kgen4295@gmail.com", you MUST score clicking that option, NOT typing again.
+
+CRITICAL - Combobox dropdown selection (after clicking combobox):
+- If the recent action was "click on 'Change project'" or similar combobox click, and you now see role=option elements in the DOM:
+  → These are the dropdown options that appeared after clicking the combobox.
+  → You MUST click one of these role=option elements to select a value, NOT click the combobox again.
+  → If any role=option element matches the goal (e.g., goal mentions "Softlight" and you see role=option with label "Softlight"), score it 10 - this is the HIGHEST PRIORITY.
+  → Do NOT score clicking the combobox again if it was just clicked - it's already open, clicking it again won't help.
+  → Example: If recent action was "click on 'Change project'" and you see role=option elements like "No project", "beta", "Happy", "Softlight", and the goal mentions "Softlight", you MUST score clicking the "Softlight" option as 10.
+  → Same applies to assignee comboboxes: if goal mentions "kgen" and you see role=option with "kgen", click that option (score 10).
 
 IMPORTANT: Use the index number from [index] in the format above. For example, if you see [123]<button>Submit</button>, use index 123.
 
@@ -175,6 +192,14 @@ CRITICAL - Form completion awareness:
 - Return actions for EACH unfilled required field, not just the first one.
 - If fields are already filled (see above), do NOT return actions for those fields again.
 - Example: For a message form, you should identify: recipient field, subject field, AND message body field - return actions for all unfilled ones.
+
+CRITICAL - Message body/description field detection:
+- Message body fields may appear as role=document, role=textbox, or contenteditable divs with labels like "Edit message draft", "Write a message", "Message", "Description", "Body", "Comments", etc.
+- If you see a message composition interface (message form, issue creation, task creation, etc.), you MUST check if the message body/description field has content.
+- If the message body field is empty or only has placeholder text, you MUST score typing into it as HIGH PRIORITY (score 8-10).
+- Do NOT prioritize formatting buttons, emoji buttons, or other optional UI controls if the message body field is still empty.
+- The message body field is typically the LARGEST text input area in a form - look for role=document or large textarea/div elements with labels indicating message/body/description.
+- Only after the message body has content should you consider other actions like formatting or sending.
 
 Selector guidance:
 - Use a single, specific selector (no commas). Prefer role-based selectors, e.g., role=button[name="…"], role=textbox[name="…"].

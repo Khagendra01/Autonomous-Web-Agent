@@ -83,6 +83,32 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
         text_part = f" with text '{last_action['text']}'" if last_action.get('text') else ""
         logger.info(f"Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
 
+    # Summarize interactable elements instead of including full list
+    interactables = state.get('interactable_elements', [])
+    interactable_summary = ""
+    if interactables:
+        # Count by role
+        role_counts = {}
+        for elem in interactables:
+            role = elem.get('role', 'unknown')
+            role_counts[role] = role_counts.get(role, 0) + 1
+        
+        # Find key elements that might indicate completion state
+        key_elements = []
+        for elem in interactables:
+            label_lower = (elem.get('label', '') or '').lower()
+            if any(keyword in label_lower for keyword in ['submit', 'create', 'save', 'confirm', 'done', 'complete', 'finish']):
+                key_elements.append(f"{elem.get('role', 'unknown')}: '{elem.get('label', '')}'")
+        
+        interactable_summary = f"""
+UI Summary:
+- Total interactable elements: {len(interactables)}
+- Elements by role: {json.dumps(role_counts, indent=2)}
+- Key action buttons: {', '.join(key_elements[:10]) if key_elements else 'None found'}
+"""
+    else:
+        interactable_summary = "\nUI Summary: No interactable elements detected."
+
     prompt = f"""Assess whether the user's goal has been completed based on the action history and current state.
 
 Context:
@@ -97,9 +123,7 @@ Most recent action:
 
 Complete Action History (chronological):
 {json.dumps(action_details, indent=2)}
-
-Currently Available UI Elements (if any):
-{json.dumps(state.get('interactable_elements', []), indent=2)}
+{interactable_summary}
 
 Evaluation principles (generic, app-agnostic):
 1) Favor completion when a coherent workflow of actions aligns with the goal and no errors are present.
@@ -107,6 +131,13 @@ Evaluation principles (generic, app-agnostic):
 3) Consider typed values matching goal parameters as strong evidence of progress/completion.
 4) Avoid over-caution: many modern apps auto-save; absence of explicit submit does not always imply incompletion.
 5) Provide a concise, evidence-based rationale referencing specific actions.
+
+CRITICAL - Message/Form completion verification:
+- For message creation tasks: verify that BOTH subject AND message body were typed. A message with only a subject but no body is INCOMPLETE.
+- For form completion tasks: verify that ALL required fields were filled (recipient, subject/title, message body/description, etc.).
+- Check the action history for "type" actions on message body fields (labels like "Edit message draft", "Message", "Body", "Description", etc.).
+- If the goal requires sending a message and you only see typing actions for subject/recipient but NOT for message body, mark as INCOMPLETE.
+- Example: If actions show "type on 'Add subject'" but no "type on 'Edit message draft'", the message body is missing - mark as incomplete.
 
 Return ONLY valid JSON:
 {{
