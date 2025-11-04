@@ -84,6 +84,23 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
         if f"{a.action_type}|{a.selector}" not in all_tried
     ]
     
+    # Also filter out recently filled fields (last 2 steps) - avoid re-filling same field
+    recent_actions = (state.get('action_history') or [])[-2:]
+    recently_filled_labels = set()
+    for act in recent_actions:
+        if act.get('type') == 'type':
+            recently_filled_labels.add(act.get('label', ''))
+    
+    # Filter out type actions on recently filled fields
+    if recently_filled_labels:
+        before_filled_filter = len(available_actions)
+        available_actions = [
+            a for a in available_actions
+            if not (a.action_type == 'type' and a.label in recently_filled_labels)
+        ]
+        if len(available_actions) < before_filled_filter:
+            print(f"  Filtered out {before_filled_filter - len(available_actions)} recently-filled fields: {', '.join(recently_filled_labels)}")
+    
     # Log what we filtered out
     filtered_count = len(scored) - len(available_actions)
     if filtered_count > 0:
@@ -102,11 +119,15 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
     
     # Build simple actions summary
     actions_summary = []
+    filled_fields_list = []
     for i, act in enumerate(recent_actions_for_prompt):
         action_str = f"{act.get('type', 'unknown')} on '{act.get('label', 'N/A')}'"
         if act.get('type') == 'type' and act.get('text'):
             action_str += f" (typed: '{act['text'][:30]}')"
+            filled_fields_list.append(act.get('label', 'N/A'))
         actions_summary.append(f"{i+1}. {action_str}")
+    
+    filled_fields_warning = f"\n\nIMPORTANT: These fields were just filled and should NOT be selected again: {', '.join(filled_fields_list)}" if filled_fields_list else ""
     
     candidates_list = []
     for i, action in enumerate(candidates_for_llm):
@@ -120,7 +141,7 @@ def decide_action_node(state: AgentState) -> Dict[str, Any]:
 Goal: {goal}
 
 What I already tried (DON'T REPEAT THESE):
-{chr(10).join(actions_summary) if actions_summary else "Nothing yet"}
+{chr(10).join(actions_summary) if actions_summary else "Nothing yet"}{filled_fields_warning}
 
 Available actions (select by number):
 {chr(10).join(candidates_list)}
@@ -130,6 +151,7 @@ Think logically:
 - If looking for a project, find project NAMES/CARDS (not navigation buttons like "Projects" or "All projects")
 - If looking for an issue, find "Create issue" or issue-related buttons
 - Don't repeat actions already tried - they're already filtered out
+- If filling a form, ensure ALL required fields are filled before submitting{filled_fields_warning}
 
 Return ONLY the candidate number (0-{len(candidates_for_llm)-1}) as JSON: {{"i": <number>}}
 """

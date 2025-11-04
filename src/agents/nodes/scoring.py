@@ -58,10 +58,17 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     selector_map = state.get('selector_map', {})
     use_browser_use_format = dom_state_text is not None and selector_map
 
-    # Build action history summary
+    # Build action history summary with filled fields info
     history_summary = []
+    filled_fields = []  # Track recently filled fields
     for i, action in enumerate((state.get('action_history') or [])[-5:]):  # Last 5 actions
-        history_summary.append(f"{i+1}. {action.get('type', '')} on '{action.get('label', 'N/A')}'")
+        action_str = f"{i+1}. {action.get('type', '')} on '{action.get('label', 'N/A')}'"
+        if action.get('type') == 'type' and action.get('text'):
+            action_str += f" (typed: '{action.get('text', '')[:50]}')"
+            filled_fields.append(action.get('label', 'N/A'))
+        history_summary.append(action_str)
+    
+    filled_fields_info = f"\nFields already filled: {', '.join(filled_fields)}" if filled_fields else ""
 
     if use_browser_use_format:
         # Use browser-use format
@@ -71,7 +78,7 @@ Context:
 - Goal: {state.get('goal', '')}
 - Instruction: {state.get('instruction', '')}
 - Current URL: {state.get('current_url', '')}
-- Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}
+- Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}{filled_fields_info}
 
 Interactive Elements (browser-use format):
 Each interactive element is shown as [index]<tag>text</tag> with attributes.
@@ -95,11 +102,38 @@ Generic principles:
 5) Avoid repeating recently ineffective actions.
 6) If there are validation errors, prioritize actions that resolve them.
 
+CRITICAL - Form completion awareness:
+- If this is a form (message, issue, task creation, etc.), identify ALL required text input fields that need content.
+- Common form fields include: recipient/email, subject/title, message/body/description, comments, etc.
+- Return actions for EACH unfilled required field, not just the first one.
+- If fields are already filled (see above), do NOT return actions for those fields again.
+- Example: For a message form, you should identify: recipient field, subject field, AND message body field - return actions for all unfilled ones.
+
+CRITICAL - Autocomplete/Combobox behavior:
+- If you see a combobox field (role=combobox or role=textbox with "type the name" or similar autocomplete hints) and autocomplete options (role=option) are visible in the DOM:
+  → After typing in the combobox, you MUST click one of the autocomplete options (role=option) to actually select the value.
+  → Typing alone does NOT complete the field - it only triggers the autocomplete dropdown.
+  → If autocomplete options are visible (especially ones matching the goal, like email addresses), clicking the matching option is the HIGHEST PRIORITY action (score 10).
+  → Do NOT score typing the same value again in a combobox field that was just typed in - instead, click the autocomplete option.
+  → Example: If "type on 'Type the name...' (typed: 'kgen4295@gmail.com')" was just done, and you see role=option elements with "kgen4295@gmail.com", you MUST score clicking that option, NOT typing again.
+
 IMPORTANT: Use the index number from [index] in the format above. For example, if you see [123]<button>Submit</button>, use index 123.
+
+CRITICAL - For type actions, the "text" field must contain the EXACT LITERAL VALUE to type, NOT instructions:
+- CORRECT: {{"action_type": "type", "text": "kgen4295@gmail.com", "reasoning": "Enter the recipient email"}}
+- WRONG: {{"action_type": "type", "text": "Ensure recipient kgen4295@gmail.com is entered", "reasoning": "..."}}
+- CORRECT: {{"action_type": "type", "text": "Meeting reminder", "reasoning": "Add subject line"}}
+- WRONG: {{"action_type": "type", "text": "Add a subject for the message", "reasoning": "..."}}
+
+The "text" field should be:
+- For email fields: the actual email address (e.g., "user@example.com")
+- For subject fields: the actual subject line (e.g., "Meeting tomorrow")
+- For message/body fields: the actual message content (e.g., "Please come early to the meeting")
+- NEVER: instructions like "Ensure...", "Type...", "Enter...", "Add..." - these belong in "reasoning" only
 
 Return ONLY a JSON array of objects like:
 [
-  {{"index": 123, "label": "…", "action_type": "click|type|scroll", "text": "optional", "score": 0-10, "reasoning": "…"}}
+  {{"index": 123, "label": "…", "action_type": "click|type|scroll", "text": "actual value to type (only for type actions)", "score": 0-10, "reasoning": "explanation of why this action helps"}}
 ]
 """
     else:
@@ -114,7 +148,7 @@ Context:
 - Goal: {state.get('goal', '')}
 - Instruction: {state.get('instruction', '')}
 - Current URL: {state.get('current_url', '')}
-- Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}
+- Recent Actions:\n{chr(10).join(history_summary) if history_summary else "None"}{filled_fields_info}
 
 Available Interactive Elements (truncated):
 {json.dumps(interactables, indent=2)}
@@ -135,12 +169,31 @@ Generic principles:
 5) Avoid repeating recently ineffective actions.
 6) If there are validation errors, prioritize actions that resolve them.
 
+CRITICAL - Form completion awareness:
+- If this is a form (message, issue, task creation, etc.), identify ALL required text input fields that need content.
+- Common form fields include: recipient/email, subject/title, message/body/description, comments, etc.
+- Return actions for EACH unfilled required field, not just the first one.
+- If fields are already filled (see above), do NOT return actions for those fields again.
+- Example: For a message form, you should identify: recipient field, subject field, AND message body field - return actions for all unfilled ones.
+
 Selector guidance:
 - Use a single, specific selector (no commas). Prefer role-based selectors, e.g., role=button[name="…"], role=textbox[name="…"].
 
+CRITICAL - For type actions, the "text" field must contain the EXACT LITERAL VALUE to type, NOT instructions:
+- CORRECT: {{"action_type": "type", "text": "kgen4295@gmail.com", "reasoning": "Enter the recipient email"}}
+- WRONG: {{"action_type": "type", "text": "Ensure recipient kgen4295@gmail.com is entered", "reasoning": "..."}}
+- CORRECT: {{"action_type": "type", "text": "Meeting reminder", "reasoning": "Add subject line"}}
+- WRONG: {{"action_type": "type", "text": "Add a subject for the message", "reasoning": "..."}}
+
+The "text" field should be:
+- For email fields: the actual email address (e.g., "user@example.com")
+- For subject fields: the actual subject line (e.g., "Meeting tomorrow")
+- For message/body fields: the actual message content (e.g., "Please come early to the meeting")
+- NEVER: instructions like "Ensure...", "Type...", "Enter...", "Add..." - these belong in "reasoning" only
+
 Return ONLY a JSON array of objects like:
 [
-  {{"selector": "role=button[name=\"…\"]", "label": "…", "action_type": "click|type|scroll", "text": "optional", "score": 0-10, "reasoning": "…"}}
+  {{"selector": "role=button[name=\"…\"]", "label": "…", "action_type": "click|type|scroll", "text": "actual value to type (only for type actions)", "score": 0-10, "reasoning": "explanation of why this action helps"}}
 ]
 """
 
@@ -250,6 +303,7 @@ Return ONLY a JSON array of objects like:
                 "label": action.label,
                 "score": action.score,
                 "selector": action.selector,
+                "text": action.text if action.action_type == 'type' else None,  # Include text for type actions
                 "backend_node_id": selector_map.get(action.index, {}).get('backend_node_id') if action.index and use_browser_use_format else None
             }
             for action in adjusted[:10]  # Log top 10
