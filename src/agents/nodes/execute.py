@@ -3,6 +3,7 @@ import requests
 
 from ..state import AgentState, ScoredAction
 from .common import driver_client
+from ..utils.logger import get_logger
 
 
 def execute_action_node(state: AgentState) -> Dict[str, Any]:
@@ -16,6 +17,9 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
     print(f"  Reasoning: {action.reasoning}")
     
+    logger = get_logger()
+    logger.section(f"EXECUTE Step {state.get('step_count', 0)}")
+    
     # Resolve selector and backend_node_id from index if using browser-use format
     selector = action.selector
     backend_node_id = None
@@ -24,13 +28,29 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         if action.index in selector_map:
             element_info = selector_map[action.index]
             selector = element_info['selector']
-            backend_node_id = element_info.get('backend_node_id', 0)
-            if backend_node_id and backend_node_id > 0:
-                print(f"  Resolved index {action.index} -> selector: {selector}, backend_node_id: {backend_node_id}")
+            # Get stored backend_node_id (may be 0 if unavailable)
+            # Note: The driver will always do lazy resolution at execution time to get fresh backend_node_id
+            stored_backend_id = element_info.get('backend_node_id', 0)
+            # Only use stored backend_node_id if it looks like a real CDP ID (>= 1000)
+            # Small values are likely indices, not real CDP IDs
+            backend_node_id = stored_backend_id if stored_backend_id >= 1000 else None
+            
+            if backend_node_id:
+                print(f"  Resolved index {action.index} -> selector: {selector}, stored_backend_node_id: {backend_node_id} (will resolve fresh at execution)")
             else:
-                print(f"  Resolved index {action.index} -> selector: {selector} (no backend_node_id)")
+                print(f"  Resolved index {action.index} -> selector: {selector} (backend_node_id will be resolved at execution time)")
+            
+            logger.cdp(f"Resolved element for execution", {
+                "index": action.index,
+                "stored_backend_node_id": stored_backend_id,
+                "backend_node_id": backend_node_id,  # Only valid if >= 1000
+                "selector": selector,
+                "label": element_info.get('label'),
+                "action_type": action.action_type
+            })
         else:
             print(f"  ⚠️  Warning: index {action.index} not found in selector_map, using fallback")
+            logger.warning(f"Index not found in selector_map", {"index": action.index})
     
     # Build action payload
     payload = {
@@ -63,12 +83,24 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     
     # Execute via driver with retry and SmartLocate fallback
     try:
+        logger.info(f"Executing action", {
+            "action_type": payload['type'],
+            "selector": payload.get('selector'),
+            "backend_node_id": backend_node_id if backend_node_id and backend_node_id > 0 else None,
+            "has_text": bool(payload.get('text'))
+        })
+        
         result = driver_client.act(
             type=payload['type'],
             selector=payload.get('selector'),
             text=payload.get('text'),
             backend_node_id=backend_node_id if backend_node_id and backend_node_id > 0 else None
         )
+        
+        logger.info(f"Action execution result", {
+            "success": result.ok,
+            "error": result.error if not result.ok else None
+        })
         
         if not result.ok:
             # Try SmartLocate as fallback if we have a label
@@ -132,9 +164,10 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
                 pass
         
         # Add to history (include text for type actions so we can verify content later)
+        # IMPORTANT: Use RESOLVED selector (not action.selector) so filtering works correctly
         action_record = {
             'type': action.action_type,
-            'selector': action.selector,
+            'selector': selector,  # Use resolved selector, not action.selector
             'label': action.label,
             'score': action.score,
             'reasoning': action.reasoning,

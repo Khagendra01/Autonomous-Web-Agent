@@ -37,7 +37,8 @@ class InteractableElement:
 	# Additional fields for browser-use format
 	attributes: dict[str, str] = field(default_factory=dict)
 	text_content: str = ""
-	backend_node_id: int = 0  # Will be assigned sequentially
+	llm_index: int = 0  # Index for LLM to reference (enumeration index)
+	backend_node_id: int = 0  # Real CDP backend_node_id (0 if unavailable, will be resolved at execution time)
 
 
 @dataclass

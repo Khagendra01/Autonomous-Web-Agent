@@ -27,16 +27,15 @@ def convert_interactables_to_dom_state(
 	element_map: Dict[int, InteractableElement] = {}
 	selector_map: SelectorMap = {}
 	
-	# Use real backend_node_id from gRPC if available, otherwise assign sequential
-	backend_node_id_counter = 1  # For elements without backend_node_id
-	
 	for i, inter_dict in enumerate(capped_interactables):
-		# Use real backend_node_id from CDP if available (non-zero), otherwise assign sequential
+		# Get real CDP backend_node_id from gRPC (0 if not available)
+		# We'll resolve it fresh at execution time via lazy resolution
 		real_backend_id = inter_dict.get('backend_node_id', 0)
-		if real_backend_id == 0:
-			# No real backend_node_id, assign sequential (but skip 0)
-			real_backend_id = backend_node_id_counter
-			backend_node_id_counter += 1
+		
+		# Only use real CDP backend_node_id if it's a valid large number (typically > 1000)
+		# Small numbers (< 1000) are likely indices, not real CDP IDs
+		if real_backend_id < 1000:
+			real_backend_id = 0  # Mark as unavailable, will resolve at execution time
 		
 		element = InteractableElement(
 			role=inter_dict.get('role', ''),
@@ -50,7 +49,8 @@ def convert_interactables_to_dom_state(
 			type=inter_dict.get('type', ''),
 			placeholder=inter_dict.get('placeholder', ''),
 			text_content=inter_dict.get('label', ''),
-			backend_node_id=real_backend_id,  # Use real backend_node_id from CDP
+			llm_index=i,  # Enumeration index for LLM to reference
+			backend_node_id=real_backend_id,  # Real CDP backend_node_id (0 if unavailable)
 		)
 		
 		# Build attributes dict
@@ -71,7 +71,7 @@ def convert_interactables_to_dom_state(
 			element.attributes['class'] = ' '.join(element.classes)
 		
 		element_map[i] = element
-		selector_map[real_backend_id] = element  # Use real backend_node_id as key
+		selector_map[i] = element  # Use enumeration index as key for LLM lookup
 	
 	# Build simplified tree structure
 	# Since we don't have full DOM hierarchy from gRPC, we'll create a flat-ish structure

@@ -4,173 +4,189 @@ import re
 
 from ..state import AgentState, ScoredAction
 from .common import client
+from ..utils.logger import get_logger
 
 
-def _serialize_candidates(base_list: List[ScoredAction], max_candidates: int) -> List[Dict[str, Any]]:
-    return [
-        {
-            'i': i,
-            'action_type': a.action_type,
-            'label': a.label,
-            'selector': a.selector,
-            'index': a.index,  # Include index if available
-            'score': a.score,
-            'text': a.text,
-            'reasoning': a.reasoning,
-        }
-        for i, a in enumerate(base_list[:max_candidates])
-    ]
-
-
-def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
-    # Remove code fences if present
-    if "```" in text:
-        parts = text.split("```")
-        # Prefer the first fenced block content
-        if len(parts) >= 2:
-            candidate = parts[1]
-            if candidate.lstrip().startswith("json"):
-                candidate = candidate.lstrip()[4:]
-            text = candidate.strip()
-
+def _extract_index_from_response(text: str) -> Optional[int]:
+    """Extract a single integer index from LLM response."""
     # Try direct JSON parse
     try:
-        return json.loads(text)
+        obj = json.loads(text)
+        if isinstance(obj, dict):
+            idx = obj.get('i') or obj.get('index')
+            if idx is not None:
+                return int(idx)
+        if isinstance(obj, int):
+            return obj
     except Exception:
         pass
-
-    # Fallback: find the first top-level JSON object via regex
-    try:
-        match = re.search(r"\{[\s\S]*\}", text)
-        if match:
-            return json.loads(match.group(0))
-    except Exception:
-        return None
+    
+    # Try code fences
+    if "```" in text:
+        parts = text.split("```")
+        if len(parts) >= 2:
+            candidate = parts[1].strip()
+            if candidate.lstrip().startswith("json"):
+                candidate = candidate.lstrip()[4:].strip()
+            try:
+                obj = json.loads(candidate)
+                if isinstance(obj, dict):
+                    idx = obj.get('i') or obj.get('index')
+                    if idx is not None:
+                        return int(idx)
+            except Exception:
+                pass
+    
+    # Try regex to find a number
+    match = re.search(r'\b(\d+)\b', text)
+    if match:
+        try:
+            return int(match.group(1))
+        except Exception:
+            pass
+    
     return None
 
 
-def _choose_fallback(base_list: List[ScoredAction]) -> Optional[ScoredAction]:
-    if not base_list:
-        return None
-    # Highest score, tiebreak by label then selector for determinism
-    return sorted(
-        base_list,
-        key=lambda a: (-float(a.score or 0.0), str(a.label or ''), str(a.selector or '')),
-    )[0]
-
-
 def decide_action_node(state: AgentState) -> Dict[str, Any]:
-    """Choose the next action from scored candidates using LLM with robust fallbacks.
-
-    App-agnostic policy; avoids app-specific heuristics and examples.
+    """Choose the next action from scored candidates using a small LLM call with minimal context.
+    
+    Uses past actions and goal to make a contextual decision from the top-scored candidates.
     """
-    print(f"\n[DECIDE] Selecting next action with autonomous policy")
+    print(f"\n[DECIDE] Selecting best action with contextual constraints")
 
     scored = state.get('scored_actions') or []
     if not scored:
+        print("  No scored actions available")
         return { 'next_action': state.get('next_action') }
 
-    # Configurable parameters with safe defaults
-    model_name = state.get('llm_model') or "gpt-4o"
-    max_candidates = int(state.get('decision_max_candidates') or 15)
-
-    # Filter out actions already tried on this URL to reduce loops
+    # Filter out actions already tried - check BOTH current URL and recent actions globally
+    # This prevents loops where agent keeps clicking same button even after URL changes
     current_url = state.get('current_url') or ''
     tried_map = state.get('tried_actions_by_url') or {}
     tried_here: List[str] = tried_map.get(current_url, [])
-    filtered_scored: List[ScoredAction] = [
-        a for a in scored if f"{a.action_type}|{a.selector}" not in tried_here
+    
+    # ALSO check recent action history globally (last 10 actions) to avoid retrying same action
+    # even if URL changed (e.g., clicking "Projects" on homepage, then clicking it again on projects page)
+    recent_actions = (state.get('action_history') or [])[-10:]
+    tried_globally = set()
+    for act in recent_actions:
+        action_key = f"{act.get('type', '')}|{act.get('selector', '')}"
+        if action_key:
+            tried_globally.add(action_key)
+    
+    # Combine: tried on this URL OR tried recently globally
+    all_tried = set(tried_here) | tried_globally
+    
+    # Filter out ALL tried actions
+    available_actions = [
+        a for a in scored 
+        if f"{a.action_type}|{a.selector}" not in all_tried
     ]
-    base_list = filtered_scored if filtered_scored else scored
+    
+    # Log what we filtered out
+    filtered_count = len(scored) - len(available_actions)
+    if filtered_count > 0:
+        print(f"  Filtered out {filtered_count} already-tried actions ({len(set(tried_here) - tried_globally)} from current URL, {len(tried_globally - set(tried_here))} from recent history)")
 
-    if not base_list:
+    if not available_actions:
         print("  No candidates available after filtering")
         return { 'next_action': state.get('next_action') }
 
-    candidates = _serialize_candidates(base_list, max_candidates)
-
-    recent = (state.get('action_history') or [])[-5:]
-    errors = state.get('errors') or []
+    # Limit to top 8 candidates for LLM decision
+    candidates_for_llm = available_actions[:8]
+    
+    # Get recent action history (last 5 actions) for prompt context
+    recent_actions_for_prompt = (state.get('action_history') or [])[-5:]
     goal = state.get('goal') or ''
-    instruction = state.get('instruction') or ''
-    current_url_str = state.get('current_url') or ''
+    
+    # Build simple actions summary
+    actions_summary = []
+    for i, act in enumerate(recent_actions_for_prompt):
+        action_str = f"{act.get('type', 'unknown')} on '{act.get('label', 'N/A')}'"
+        if act.get('type') == 'type' and act.get('text'):
+            action_str += f" (typed: '{act['text'][:30]}')"
+        actions_summary.append(f"{i+1}. {action_str}")
+    
+    candidates_list = []
+    for i, action in enumerate(candidates_for_llm):
+        candidate_str = f"{i}. [{action.score:.1f}] {action.action_type} '{action.label}'"
+        if action.reasoning:
+            candidate_str += f" - {action.reasoning[:100]}"
+        candidates_list.append(candidate_str)
+    
+    prompt = f"""Choose the best action to achieve the goal. Be logical and rational.
 
-    prompt = f"""You are an autonomous web agent policy. Choose the best next UI action by index.
+Goal: {goal}
 
-Context:
-- Goal: {goal}
-- Instruction: {instruction}
-- Current URL: {current_url_str}
-- Errors/Validation: {json.dumps(errors)}
-- Recent actions (last 5): {json.dumps(recent)}
+What I already tried (DON'T REPEAT THESE):
+{chr(10).join(actions_summary) if actions_summary else "Nothing yet"}
 
-Candidates (select one by index 'i'):
-{json.dumps(candidates, indent=2)}
+Available actions (select by number):
+{chr(10).join(candidates_list)}
 
-Decision principles (generic, app-agnostic):
-1) Prefer actions that clearly advance the stated goal.
-2) When high-quality options are absent, prefer low-risk exploration (e.g., scroll, open menu) to reveal better options.
-3) If validation or error signals exist, prioritize resolving them.
-4) Avoid repeating ineffective recent actions.
-5) Be honest about candidate quality in the rationale.
+Think logically:
+- What is the next concrete step to achieve the goal?
+- If looking for a project, find project NAMES/CARDS (not navigation buttons like "Projects" or "All projects")
+- If looking for an issue, find "Create issue" or issue-related buttons
+- Don't repeat actions already tried - they're already filtered out
 
-Return ONLY valid JSON:
-{{
-  "i": <candidate index>,
-  "rationale": "brief why this action is best",
-  "textOverride": "optional text for type actions or null"
-}}"""
+Return ONLY the candidate number (0-{len(candidates_for_llm)-1}) as JSON: {{"i": <number>}}
+"""
 
+    logger = get_logger()
+    logger.llm(f"Decision prompt (minimal context)", {
+        "prompt_length": len(prompt),
+        "candidates_count": len(candidates_for_llm),
+        "recent_actions_count": len(recent_actions_for_prompt)
+    })
+    
+    # Small LLM call with minimal context
+    chosen = None
     try:
         response = client.chat.completions.create(
-            model=model_name,
+            model=state.get('llm_model') or "gpt-4.1",
             messages=[
-                {"role": "system", "content": "You are an autonomous web navigation agent. Return only valid JSON."},
-                {"role": "user", "content": prompt},
-            ]
+                {"role": "system", "content": "You are a web navigation agent. Choose actions logically to achieve the goal. Don't repeat actions already tried. Return only JSON with candidate index."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,  # Lower temperature for more deterministic choices
+            max_tokens=50  # Small response - just need a number
         )
         content = (response.choices[0].message.content or "").strip()
-    except Exception as e:
-        print(f"  Decision LLM call failed: {e}")
-        fallback = _choose_fallback(base_list)
-        return { 'next_action': fallback }
-
-    decision = _extract_json_payload(content) or {}
-    try:
-        idx = int(decision.get('i', 0))
-    except Exception:
-        idx = 0
-    rationale = (decision.get('rationale') or '').strip()
-    text_override = decision.get('textOverride')
-
-    if 0 <= idx < len(candidates) and idx < len(base_list):
-        chosen = base_list[idx]
-        if chosen.action_type == 'type' and text_override is not None:
-            chosen = ScoredAction(
-                action_type=chosen.action_type,
-                selector=chosen.selector,
-                index=chosen.index,  # Preserve index
-                label=chosen.label,
-                score=chosen.score,
-                reasoning=rationale or chosen.reasoning,
-                text=str(text_override),
-            )
+        
+        logger.llm(f"LLM decision response", {
+            "response": content,
+            "response_length": len(content)
+        })
+        
+        idx = _extract_index_from_response(content)
+        if idx is not None and 0 <= idx < len(candidates_for_llm):
+            chosen = candidates_for_llm[idx]
+            print(f"  LLM selected: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}' (candidate #{idx})")
         else:
-            chosen = ScoredAction(
-                action_type=chosen.action_type,
-                selector=chosen.selector,
-                index=chosen.index,  # Preserve index
-                label=chosen.label,
-                score=chosen.score,
-                reasoning=rationale or chosen.reasoning,
-                text=chosen.text,
-            )
-        print(f"  Chosen: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
-        if rationale:
-            print(f"  Rationale: {rationale}")
-        return { 'next_action': chosen }
+            print(f"  ⚠️  LLM returned invalid index {idx}, using highest score fallback")
+            chosen = candidates_for_llm[0]
+    except Exception as e:
+        print(f"  ⚠️  LLM call failed: {e}, using highest score fallback")
+        logger.warning(f"Decision LLM call failed", {"error": str(e)})
+        chosen = candidates_for_llm[0]
+    
+    logger.info(f"Selected action", {
+        "action_type": chosen.action_type,
+        "label": chosen.label,
+        "score": chosen.score,
+        "index": chosen.index,
+        "selector": chosen.selector,
+        "reasoning": chosen.reasoning,
+        "was_tried": f"{chosen.action_type}|{chosen.selector}" in all_tried
+    })
+    
+    print(f"  Final choice: [{chosen.score:.1f}] {chosen.action_type} '{chosen.label}'")
+    if chosen.reasoning:
+        print(f"  Reasoning: {chosen.reasoning}")
+    if f"{chosen.action_type}|{chosen.selector}" in all_tried:
+        print(f"  ⚠️  WARNING: This action was tried before! This shouldn't happen after filtering.")
 
-    print(f"  Invalid index {idx}; using fallback")
-    fallback = _choose_fallback(base_list)
-    return { 'next_action': fallback }
+    return { 'next_action': chosen }
 

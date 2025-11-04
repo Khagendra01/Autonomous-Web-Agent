@@ -4,6 +4,7 @@ import re
 
 from ..state import AgentState, ScoredAction
 from ..utils.dom import summarize_accessibility_tree
+from ..utils.logger import get_logger
 from .common import client
 
 
@@ -49,7 +50,7 @@ def score_actions_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[SCORE] Analyzing actions for goal: {goal}")
 
     # Configurable parameters
-    model_name = state.get('llm_model') or "gpt-4o"
+    model_name = state.get('llm_model') or "gpt-4.1"
     max_elements = int(state.get('scoring_max_elements') or 80)
 
     # Use browser-use format if available, fallback to legacy format
@@ -143,6 +144,13 @@ Return ONLY a JSON array of objects like:
 ]
 """
 
+    logger = get_logger()
+    logger.llm(f"Scoring prompt sent to LLM", {
+        "model": model_name,
+        "prompt_length": len(prompt),
+        "prompt_preview": prompt[:1000] + "..." if len(prompt) > 1000 else prompt
+    })
+    
     try:
         response = client.chat.completions.create(
             model=model_name,
@@ -152,6 +160,11 @@ Return ONLY a JSON array of objects like:
             ]
         )
         content = (response.choices[0].message.content or "").strip()
+        
+        logger.llm(f"LLM scoring response received", {
+            "response_length": len(content),
+            "response_preview": content[:500] + "..." if len(content) > 500 else content
+        })
     except Exception as e:
         print(f"  Scoring LLM call failed: {e}")
         return {
@@ -162,6 +175,8 @@ Return ONLY a JSON array of objects like:
 
     scored_actions_raw = _extract_json_array(content) or []
 
+    logger.debug(f"Parsing {len(scored_actions_raw)} scored actions from LLM")
+    
     parsed_actions: List[ScoredAction] = []
     for a in scored_actions_raw:
         try:
@@ -224,6 +239,23 @@ Return ONLY a JSON array of objects like:
     adjusted: List[ScoredAction] = sorted(deduped, key=lambda x: float(x.score or 0.0), reverse=True)
 
     print(f"  Scored {len(adjusted)} actions (deduped)")
+    
+    # Log all scored actions
+    logger.llm(f"Parsed scored actions", {
+        "total": len(adjusted),
+        "actions": [
+            {
+                "index": action.index,
+                "action_type": action.action_type,
+                "label": action.label,
+                "score": action.score,
+                "selector": action.selector,
+                "backend_node_id": selector_map.get(action.index, {}).get('backend_node_id') if action.index and use_browser_use_format else None
+            }
+            for action in adjusted[:10]  # Log top 10
+        ]
+    })
+    
     for i, action in enumerate(adjusted[:3]):
         print(f"  {i+1}. [{action.score:.1f}] {action.action_type} '{action.label}' - {action.reasoning}")
 

@@ -30,11 +30,11 @@ class DOMTreeSerializer:
 		
 		# Build element line
 		if node.is_interactive:
-			# Interactive element with index
+			# Interactive element with index (use llm_index for LLM reference)
 			new_prefix = '*' if node.is_new else ''
 			# Use tag if available, otherwise use role
 			tag_display = element.tag if element.tag and element.tag != 'div' else (element.role or 'element')
-			line = f'{depth_str}{new_prefix}[{element.backend_node_id}]<{tag_display}'
+			line = f'{depth_str}{new_prefix}[{element.llm_index}]<{tag_display}'
 		else:
 			# Non-interactive container
 			tag_display = element.tag if element.tag else 'div'
@@ -53,11 +53,23 @@ class DOMTreeSerializer:
 		elif element.label and element.label != element.text_content:
 			# Use label as text content, but show shorter version for very long labels
 			if len(element.label) > 50:
-				# Extract meaningful words (skip metadata like "Select project", "Click to", etc.)
-				words = element.label.split()
-				# Prefer middle/end words (actual content), skip first 1-2 command words
-				meaningful_words = words[1:] if len(words) > 3 and words[0].lower() in ['select', 'choose', 'click', 'show', 'add'] else words
-				short_label = ' '.join(meaningful_words[:5])  # First 5 meaningful words
+				# Use extract_short_label to get meaningful project names
+				try:
+					from ...drivers.utils.selector_generator import extract_short_label
+					short_label = extract_short_label(element.label, max_words=3)
+					# If we got a good short label, use it; otherwise fall back
+					if not short_label or len(short_label) < 2:
+						# Fallback: try to extract project name (capitalized words)
+						words = element.label.split()
+						capitalized = [w for w in words if w and w[0].isupper() and len(w) > 2]
+						if capitalized:
+							short_label = capitalized[0]  # Use first capitalized word (likely project name)
+						else:
+							short_label = ' '.join(words[:3])  # Fallback to first 3 words
+				except Exception:
+					# Fallback if import fails
+					words = element.label.split()
+					short_label = ' '.join(words[:3])
 			else:
 				short_label = element.label
 			line += f'>{cap_text_length(short_label, 100)}</{tag_display}>'

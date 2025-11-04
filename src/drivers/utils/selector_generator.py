@@ -121,6 +121,24 @@ def extract_short_label(long_label: str, max_words: int = 4) -> str:
     
     words = long_label.strip().split()
     
+    # First, try to find capitalized words (project names like "Softlight", "Happy", "beta")
+    capitalized_words = [w for w in words if w and w[0].isupper() and len(w) > 2]
+    if capitalized_words:
+        # Prefer the first capitalized word that's not a common word
+        common_words = {'Select', 'Choose', 'Click', 'No', 'Change', 'Project', 'Target', 'Date'}
+        for cap_word in capitalized_words:
+            if cap_word not in common_words:
+                return cap_word  # Return just the project name
+    
+    # Also check for lowercase but meaningful words (like "beta")
+    lowercase_meaningful = [w for w in words if w and w[0].islower() and len(w) > 3 and w.isalnum()]
+    if lowercase_meaningful:
+        # Check if it's not a metadata word
+        metadata_lower = ['updates', 'priority', 'click', 'write', 'change', 'target', 'date']
+        for word in lowercase_meaningful:
+            if word.lower() not in metadata_lower:
+                return word
+    
     # Remove common metadata phrases
     metadata_patterns = [
         r'click\s+to\s+\w+',

@@ -8,6 +8,7 @@ from .workflow import create_agent_workflow
 from ..drivers.grpc_client import DriverClient
 from .state import AgentState
 from .utils.storage import RunStorage
+from .utils.logger import init_logger, get_logger
 from dotenv import load_dotenv
 
 
@@ -99,6 +100,11 @@ def run_task(
         app=(app_name or 'webapp').lower(),
         task_slug=task_slug
     )
+    
+    # Initialize logger with file output
+    log_file = storage.root / "agent_log.txt"
+    logger = init_logger(str(log_file))
+    logger.info(f"Logging initialized", {"log_file": str(log_file)})
     
     # Create initial state
     initial_state: AgentState = {
@@ -205,6 +211,11 @@ def run_task(
         print(f"\n\n❌ Error during workflow execution: {e}")
         import traceback
         traceback.print_exc()
+        # Close logger
+        try:
+            get_logger().close()
+        except Exception:
+            pass
         return False
 
 

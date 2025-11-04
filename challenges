@@ -14,7 +14,7 @@ LLM decides when to call focus_contenteditable; the driver just executes a gener
 
 
 ┌─────────────────────────────────────────────────────────┐
-│  LLM (OpenAI GPT-4o)                                    │
+│  LLM (OpenAI gpt-4.1)                                    │
 │  - Sees: [1]<button>Submit</button> format              │
 │  - Returns: {"index": 1, "action_type": "click"}       │
 └─────────────────────────────────────────────────────────┘

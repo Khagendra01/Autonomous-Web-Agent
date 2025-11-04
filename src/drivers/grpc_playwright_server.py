@@ -21,6 +21,7 @@ from .utils import cdp_helper as cdp_helper_module
 from .utils.cdp_helper import (
     get_cdp_session,
     get_backend_node_id_from_element_info,
+    get_backend_node_id_from_playwright_element,
     click_by_backend_node_id
 )
 
@@ -60,11 +61,38 @@ def to_interactables(a11y: dict) -> list[dict]:
         role = node.get('role')
         name = node.get('name') or ''
         disabled = node.get('disabled', False)  # Check disabled state from a11y tree
+        
+        # Check if this is a parent container with long concatenated label
+        # These are table rows or containers that aggregate child text
+        # BUT: We still extract the element itself AND walk children to catch all clickable elements
+        is_parent_container = False
+        if role in ["link", "button"] and name:
+            # Detect parent containers: long labels (>80 chars) with multiple separate phrases
+            if len(name) > 80:
+                # Check if label contains multiple separate action phrases (sign of aggregation)
+                separate_phrases = [
+                    "Choose icon", "No updates", "Click to write", "Change project",
+                    "target date", "Select project", "Priority"
+                ]
+                phrase_count = sum(1 for phrase in separate_phrases if phrase.lower() in name.lower())
+                # If it has 3+ separate phrases, it's likely a parent container
+                if phrase_count >= 3:
+                    is_parent_container = True
+        
+        # Extract ALL interactive elements, including parent containers
+        # We'll let the deduplication logic handle duplicates
         if role in ["button", "textbox", "combobox", "link", "menuitem", "checkbox", "radio"]:
             if role == "textbox":
                 # Check for trap elements (rich text editor helpers)
                 if is_trap_element(page_ref, name):
+                    # Still walk children even if parent is a trap
+                    for c in node.get('children', []) or []:
+                        walk(c)
                     return
+            
+            # Even if it's a parent container, extract it (it might be clickable)
+            # Also walk children to catch all nested clickable elements
+            
             # Normalize keyboard-hint suffixes for menu entries (e.g., "G then S")
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
             
@@ -72,21 +100,35 @@ def to_interactables(a11y: dict) -> list[dict]:
             short_label = extract_short_label(label_out) if len(label_out) > 30 else label_out
             
             # Try to get backend_node_id via CDP (if available)
+            # Generate selector first for better CDP lookup
             backend_node_id = 0
             if _cdp_session:
                 try:
+                    # Generate a selector for this element
+                    from .utils.selector_generator import generate_best_selector
+                    temp_selector = generate_best_selector(
+                        role=role,
+                        label=label_out,
+                        tag='',
+                        elem_id='',
+                        href=''
+                    )
+                    
                     cdp_backend_id = get_backend_node_id_from_element_info(
                         _cdp_session,
                         role=role,
                         name=label_out,
                         tag='',
                         elem_id='',
-                        href=''
+                        href='',
+                        page=_page,  # Pass page for Playwright locator method
+                        selector=temp_selector  # Pass selector for better lookup
                     )
                     if cdp_backend_id:
                         backend_node_id = cdp_backend_id
-                except Exception:
-                    pass
+                except Exception as e:
+                    if DEBUG:
+                        print(f"[CDP] Could not get backend_node_id for a11y element {role}/{label_out}: {e}")
             
             # Note: a11y tree doesn't have tag/class info, we'll get it from extra_items
             # We'll generate a better selector when we have more info from extra_items
@@ -163,7 +205,9 @@ class DriverService(driver_pb2_grpc.DriverServicer):
     def Observe(self, request, context):
         assert _page is not None
         url = _page.url
-        a11y = _page.accessibility.snapshot(interesting_only=True)
+        # Use interesting_only=False to get ALL elements, not just "interesting" ones
+        # This ensures we don't miss project cards, links, or other clickable elements
+        a11y = _page.accessibility.snapshot(interesting_only=False)
         interactables = to_interactables(a11y or {})
         try:
             extra_items = _page.evaluate(
@@ -238,7 +282,78 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
                     });
                   }
-                  // 2) Inputs/textareas/contenteditable/comboboxes across the page
+                  // 2) Find child links in table rows (for project names like "Softlight")
+                  // When a row has a long accessible name, extract the actual child link
+                  // This replaces parent container entries with specific child link entries
+                  for (const r of roots) {
+                    try {
+                      // Find table rows or list items with long accessible names
+                      r.querySelectorAll('tr, [role="row"], li, [role="listitem"], div[role="link"]').forEach(row => {
+                        if (!visible(row)) return;
+                        const rowName = textOf(row);
+                        // If row has long aggregated name (80+ chars), it's a parent container
+                        if (rowName && rowName.length > 80) {
+                          // Check if it contains multiple separate phrases (confirming it's aggregated)
+                          const separatePhrases = ['Choose icon', 'No updates', 'Click to write', 'Change project', 'target date', 'Select project', 'Priority'];
+                          const phraseCount = separatePhrases.filter(p => rowName.toLowerCase().includes(p.toLowerCase())).length;
+                          
+                          // If it has 3+ separate phrases, it's definitely a parent container
+                          if (phraseCount >= 3) {
+                            // Find child links with shorter, specific labels
+                            const childLinks = row.querySelectorAll('a[href], a:not([href]), [role="link"]');
+                            childLinks.forEach(link => {
+                              if (!visible(link)) return;
+                              const linkText = (link.getAttribute('aria-label') || link.innerText || link.textContent || '').trim();
+                              const href = link.getAttribute('href') || '';
+                              
+                              // Prefer child links with short, meaningful labels (project names)
+                              // Or links with href attributes (more specific)
+                              if (linkText && (linkText.length < 50 || href)) {
+                                // Extract project name (capitalized word or first meaningful word)
+                                let projectName = linkText;
+                                const words = linkText.split(/\\s+/);
+                                
+                                // Try to find capitalized word (project name)
+                                const capWord = words.find(w => w.length > 2 && /^[A-Z]/.test(w));
+                                if (capWord && !['Select', 'Choose', 'Click', 'No', 'Change', 'Project', 'Target', 'Date', 'Priority'].includes(capWord)) {
+                                  projectName = capWord;
+                                } else if (words.length > 0 && words[0].length > 2) {
+                                  // Use first word if it's meaningful
+                                  projectName = words[0];
+                                }
+                                
+                                const role = link.getAttribute('role') || 'link';
+                                const tag = link.tagName.toLowerCase();
+                                const classes = Array.from(link.classList || []);
+                                const id = link.id || '';
+                                const disabled = link.hasAttribute('disabled') || link.getAttribute('aria-disabled') === 'true';
+                                
+                                // Use href-based selector if available (most specific)
+                                // Otherwise use project name
+                                const key = role + '|' + projectName + (href ? '|' + href : '');
+                                if (!candidates.has(key)) {
+                                  candidates.add(key);
+                                  results.push({ 
+                                    role, 
+                                    name: projectName,  // Use short project name
+                                    disabled, 
+                                    tag, 
+                                    classes, 
+                                    id, 
+                                    href,  // Include href for better selector generation
+                                    type: '', 
+                                    placeholder: '' 
+                                  });
+                                }
+                              }
+                            });
+                          }
+                        }
+                      });
+                    } catch(e) {}
+                  }
+                  
+                  // 3) Inputs/textareas/contenteditable/comboboxes across the page
                   const inputSelectors = 'input, textarea, [role="textbox"], [contenteditable="true"], [role="combobox"]';
                   for (const r of roots) {
                     try {
@@ -273,6 +388,59 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                       });
                     } catch(e) {}
                   }
+                  
+                  // 4) Extract ALL buttons and links from the entire page (comprehensive extraction)
+                  // This catches everything that's clickable but wasn't in containers or inputs
+                  const clickableSelectors = 'button, a, [role="button"], [role="link"], [role="checkbox"], [role="radio"], [role="menuitem"], [role="option"], [role="tab"], [onclick], [data-testid*="button"], [data-testid*="link"]';
+                  for (const r of roots) {
+                    try {
+                      r.querySelectorAll(clickableSelectors).forEach(el => {
+                        if (!visible(el)) return;
+                        // Skip if already in containers (already extracted)
+                        let inContainer = false;
+                        for (const container of containers) {
+                          if (container.contains && container.contains(el)) {
+                            inContainer = true;
+                            break;
+                          }
+                        }
+                        if (inContainer) return;
+                        
+                        const tag = el.tagName.toLowerCase();
+                        let role = el.getAttribute('role') || '';
+                        if (!role) {
+                          if (tag === 'a') role = 'link';
+                          else if (tag === 'button') role = 'button';
+                          else if (el.hasAttribute('onclick') || el.getAttribute('tabindex') === '0') {
+                            // Clickable div/span - treat as button
+                            role = 'button';
+                          }
+                        }
+                        if (!role) return;
+                        
+                        let name = textOf(el);
+                        if (!name) {
+                          // Try to get name from title, data attribute, or aria attributes
+                          name = el.getAttribute('title') || el.getAttribute('data-label') || el.getAttribute('aria-label') || '';
+                        }
+                        if (!name) return;
+                        name = name.trim().replace(/\\s+/g, ' ');
+                        
+                        const disabled = el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true';
+                        const classes = Array.from(el.classList || []);
+                        const id = el.id || '';
+                        const href = el.getAttribute('href') || '';
+                        const type = el.getAttribute('type') || '';
+                        const placeholder = '';
+                        
+                        const key = role + '|' + name + (href ? '|' + href : '');
+                        if (candidates.has(key)) return;
+                        candidates.add(key);
+                        results.push({ role, name, disabled, tag, classes, id, href, type, placeholder });
+                      });
+                    } catch(e) {}
+                  }
+                  
                   return results;
                 }
                 """
@@ -300,7 +468,22 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             # Normalize keyboard-hint suffixes for menu/option names
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
             
+            # Filter out parent containers with long concatenated labels
+            # These should be replaced by child links found in extra_items
+            is_parent_container = False
+            if role in ["link", "button"] and label_out:
+                if len(label_out) > 80:
+                    separate_phrases = ['Choose icon', 'No updates', 'Click to write', 'Change project', 'target date', 'Select project', 'Priority']
+                    phrase_count = sum(1 for phrase in separate_phrases if phrase.lower() in label_out.lower())
+                    if phrase_count >= 3:
+                        # This is a parent container - skip it, child links will be in extra_items
+                        is_parent_container = True
+            
+            if is_parent_container:
+                continue
+            
             # Generate best selector using all available info
+            # For links with href, prefer href-based selector (most specific)
             best_selector = generate_best_selector(
                 role=role,
                 label=label_out,
@@ -317,23 +500,27 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 continue
             seen.add(key)
             
-            # Try to get backend_node_id via CDP
+            # Try to get backend_node_id via CDP (use selector-based method for better reliability)
             backend_node_id = 0  # 0 means not available
             if _cdp_session:
                 try:
+                    # Use selector-based lookup which is more reliable
                     cdp_backend_id = get_backend_node_id_from_element_info(
                         _cdp_session,
                         role=role,
                         name=label_out,
                         tag=tag,
                         elem_id=elem_id,
-                        href=href
+                        href=href,
+                        page=_page,  # Pass page for Playwright locator method
+                        selector=best_selector  # Pass selector for better lookup
                     )
                     if cdp_backend_id:
                         backend_node_id = cdp_backend_id
                 except Exception as e:
+                    # This is OK - we'll get backend_node_id fresh at execution time (more reliable)
                     if DEBUG:
-                        print(f"[CDP] Could not get backend_node_id for {role}/{label_out}: {e}")
+                        print(f"[CDP] Optional backend_node_id lookup skipped for {role}/{label_out}: {e}")
             
             interactables.append({
                 'role': role, 
@@ -487,7 +674,7 @@ If no element matches well, return -1.
 Respond with ONLY a number (the idx or -1)."""
                 
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model="gpt-4.1",
                     messages=[{"role": "user", "content": prompt}],
                 )
                 
@@ -583,24 +770,112 @@ Respond with ONLY a number (the idx or -1)."""
 
         try:
             if t == 'click':
-                # Try CDP click first if backend_node_id is available (most reliable)
-                backend_node_id = request.backend_node_id if hasattr(request, 'backend_node_id') else 0
+                # ALWAYS do lazy backend_node_id resolution at execution time
+                # NEVER trust stored values - they may be wrong (parent containers, stale, indices)
+                # This ensures we have a valid, current backend_node_id for the exact element
+                backend_node_id = None
+                
+                # Get stored backend_node_id from request (for logging only, NOT for use)
+                stored_backend_id = None
+                try:
+                    if hasattr(request, 'backend_node_id'):
+                        stored_backend_id = request.backend_node_id
+                    elif hasattr(request, 'DESCRIPTOR'):
+                        stored_backend_id = getattr(request, 'backend_node_id', 0)
+                except Exception:
+                    stored_backend_id = 0
+                
+                # ALWAYS resolve fresh backend_node_id at execution time using selector
+                # This is the ONLY reliable way - stored values are often wrong
+                if _cdp_session:
+                    for sel in iter_selectors():
+                        if sel:
+                            try:
+                                fresh_backend_id = get_backend_node_id_from_playwright_element(
+                                    _page if ctx is _page else ctx.page,
+                                    _cdp_session,
+                                    sel
+                                )
+                                if fresh_backend_id:
+                                    backend_node_id = fresh_backend_id
+                                    print(f"  [CDP] ✓ Resolved backend_node_id {fresh_backend_id} from selector: {sel}")
+                                    # Log to file if logger available
+                                    try:
+                                        from ...agents.utils.logger import get_logger
+                                        logger = get_logger()
+                                        logger.cdp(f"Lazy resolution successful", {
+                                            "backend_node_id": fresh_backend_id,
+                                            "selector": sel,
+                                            "stored_backend_id": stored_backend_id
+                                        })
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception as e:
+                                if DEBUG:
+                                    print(f"  [CDP] Failed to get backend_node_id from selector {sel}: {e}")
+                                continue
+                
+                # If lazy resolution failed, log it but don't use stored value (it's likely wrong)
+                if not backend_node_id:
+                    print(f"  [CDP] ⚠️  Lazy resolution failed for all selectors")
+                    if stored_backend_id and stored_backend_id > 0:
+                        print(f"  [CDP] ⚠️  Stored backend_node_id {stored_backend_id} available but NOT using it (likely wrong)")
+                    # We'll fall through to selector-based click instead
+                
+                # Try CDP click if we have a valid backend_node_id from lazy resolution
                 if backend_node_id and backend_node_id > 0 and _cdp_session:
                     try:
-                        if DEBUG:
-                            print(f"  [CDP] Attempting click via backend_node_id: {backend_node_id}")
+                        print(f"  [CDP] Attempting click via backend_node_id: {backend_node_id}")
+                        # Log to file if logger available
+                        try:
+                            from ...agents.utils.logger import get_logger
+                            logger = get_logger()
+                            logger.cdp(f"Attempting CDP click", {
+                                "backend_node_id": backend_node_id,
+                                "selector": request.selector or (request.selectors[0] if request.selectors else None),
+                                "action_type": t
+                            })
+                        except Exception:
+                            pass
+                        
                         success = click_by_backend_node_id(_cdp_session, backend_node_id)
                         if success:
                             (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
-                            if DEBUG:
-                                print(f"  [CDP] ✓ Click successful via backend_node_id")
+                            print(f"  [CDP] ✓ Click successful via backend_node_id {backend_node_id}")
+                            try:
+                                from ...agents.utils.logger import get_logger
+                                logger = get_logger()
+                                logger.cdp(f"CDP click successful", {
+                                    "backend_node_id": backend_node_id,
+                                    "method": "direct_cdp_click"
+                                })
+                            except Exception:
+                                pass
                             return driver_pb2.ActResponse(ok=True)
                         else:
-                            if DEBUG:
-                                print(f"  [CDP] ⚠️  CDP click failed, falling back to selector")
+                            print(f"  [CDP] ⚠️  CDP click failed for backend_node_id {backend_node_id}, falling back to selector")
+                            try:
+                                from ...agents.utils.logger import get_logger
+                                logger = get_logger()
+                                logger.cdp(f"CDP click failed, falling back", {
+                                    "backend_node_id": backend_node_id,
+                                    "reason": "click_by_backend_node_id returned False"
+                                })
+                            except Exception:
+                                pass
                     except Exception as cdp_err:
-                        if DEBUG:
-                            print(f"  [CDP] ⚠️  CDP click error: {cdp_err}, falling back to selector")
+                        print(f"  [CDP] ⚠️  CDP click error for backend_node_id {backend_node_id}: {cdp_err}, falling back to selector")
+                        try:
+                            from ...agents.utils.logger import get_logger
+                            logger = get_logger()
+                            logger.cdp(f"CDP click error", {
+                                "backend_node_id": backend_node_id,
+                                "error": str(cdp_err),
+                                "error_type": type(cdp_err).__name__
+                            })
+                        except Exception:
+                            pass
                 
                 # Fall back to selector-based click
                 last_err = None
