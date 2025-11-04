@@ -32,10 +32,13 @@ class DOMTreeSerializer:
 		if node.is_interactive:
 			# Interactive element with index
 			new_prefix = '*' if node.is_new else ''
-			line = f'{depth_str}{new_prefix}[{element.backend_node_id}]<{element.tag}'
+			# Use tag if available, otherwise use role
+			tag_display = element.tag if element.tag and element.tag != 'div' else (element.role or 'element')
+			line = f'{depth_str}{new_prefix}[{element.backend_node_id}]<{tag_display}'
 		else:
 			# Non-interactive container
-			line = f'{depth_str}<{element.tag}'
+			tag_display = element.tag if element.tag else 'div'
+			line = f'{depth_str}<{tag_display}'
 		
 		# Build attributes string
 		attributes_html_str = DOMTreeSerializer._build_attributes_string(element, include_attributes)
@@ -43,11 +46,21 @@ class DOMTreeSerializer:
 			line += f' {attributes_html_str}'
 		
 		# Add text content if available
+		tag_display = element.tag if element.tag and element.tag != 'div' else (element.role or 'element')
+		
 		if element.text_content:
-			line += f'>{cap_text_length(element.text_content, 100)}</{element.tag}>'
+			line += f'>{cap_text_length(element.text_content, 100)}</{tag_display}>'
 		elif element.label and element.label != element.text_content:
-			# Use label as text content
-			line += f'>{cap_text_length(element.label, 100)}</{element.tag}>'
+			# Use label as text content, but show shorter version for very long labels
+			if len(element.label) > 50:
+				# Extract meaningful words (skip metadata like "Select project", "Click to", etc.)
+				words = element.label.split()
+				# Prefer middle/end words (actual content), skip first 1-2 command words
+				meaningful_words = words[1:] if len(words) > 3 and words[0].lower() in ['select', 'choose', 'click', 'show', 'add'] else words
+				short_label = ' '.join(meaningful_words[:5])  # First 5 meaningful words
+			else:
+				short_label = element.label
+			line += f'>{cap_text_length(short_label, 100)}</{tag_display}>'
 		else:
 			line += ' />'
 		

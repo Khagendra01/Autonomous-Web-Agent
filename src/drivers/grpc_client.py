@@ -49,6 +49,7 @@ class DriverClient:
         y: Optional[int] = None,
         kind: Optional[str] = None,
         substring: Optional[str] = None,
+        backend_node_id: Optional[int] = None,
     ) -> driver_pb2.ActResponse:
         req = driver_pb2.ActRequest(
             type=type,
@@ -64,6 +65,7 @@ class DriverClient:
             y=(y or 0),
             kind=(kind or ""),
             substring=(substring or ""),
+            backend_node_id=(backend_node_id or 0),
         )
         return self.stub.Act(req)
     

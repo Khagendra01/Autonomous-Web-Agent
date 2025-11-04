@@ -27,6 +27,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
             'href': inter.href,
             'type': inter.type,
             'placeholder': inter.placeholder,
+            'backend_node_id': inter.backend_node_id if hasattr(inter, 'backend_node_id') else 0,  # Include backend_node_id
         }
         for inter in observe.interactables
     ]
@@ -45,6 +46,7 @@ def observe_node(state: AgentState) -> Dict[str, Any]:
             'role': element.role,
             'type': element.type,
             'placeholder': element.placeholder,
+            'backend_node_id': element.backend_node_id,  # Include backend_node_id
         }
 
     # Update state

@@ -16,13 +16,23 @@ if _THIS_DIR not in sys.path:
 
 import driver_pb2, driver_pb2_grpc
 from .utils import is_trap_element, normalize_label, find_aria_element, click_aria_element, extract_label_from_selector
+from .utils.selector_generator import generate_best_selector, extract_short_label
+from .utils import cdp_helper as cdp_helper_module
+from .utils.cdp_helper import (
+    get_cdp_session,
+    get_backend_node_id_from_element_info,
+    click_by_backend_node_id
+)
 
 _pw = None
 _browser = None
 _context: BrowserContext | None = None
 _page: Page | None = None
+_cdp_session = None  # CDP session for backend_node_id operations
 
 DEBUG = str(os.environ.get('DEBUG') or '').strip().lower() in ['1', 'true', 'yes', 'on']
+# Set DEBUG in cdp_helper module
+cdp_helper_module.DEBUG = DEBUG
 
 
 def _visible_js() -> str:
@@ -58,18 +68,41 @@ def to_interactables(a11y: dict) -> list[dict]:
             # Normalize keyboard-hint suffixes for menu entries (e.g., "G then S")
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
             
+            # Extract short label for better selectors
+            short_label = extract_short_label(label_out) if len(label_out) > 30 else label_out
+            
+            # Try to get backend_node_id via CDP (if available)
+            backend_node_id = 0
+            if _cdp_session:
+                try:
+                    cdp_backend_id = get_backend_node_id_from_element_info(
+                        _cdp_session,
+                        role=role,
+                        name=label_out,
+                        tag='',
+                        elem_id='',
+                        href=''
+                    )
+                    if cdp_backend_id:
+                        backend_node_id = cdp_backend_id
+                except Exception:
+                    pass
+            
             # Note: a11y tree doesn't have tag/class info, we'll get it from extra_items
+            # We'll generate a better selector when we have more info from extra_items
+            # For now, use the short label
             out.append({
                 'role': role, 
-                'label': label_out, 
-                'selector': f"role={role}[name=\"{label_out}\"]", 
+                'label': label_out,  # Keep full label for display
+                'selector': f"role={role}[name*=\"{short_label}\"]",  # Use partial match with short label
                 'disabled': disabled,
                 'tag': '',
                 'classes': [],
                 'id': '',
                 'href': '',
                 'type': '',
-                'placeholder': ''
+                'placeholder': '',
+                'backend_node_id': backend_node_id
             })
         for c in node.get('children', []) or []:
             walk(c)
@@ -105,6 +138,24 @@ class DriverService(driver_pb2_grpc.DriverServicer):
             _page = _context.new_page()
             _page.goto(start_url, wait_until='load')
             _page.wait_for_timeout(1000)
+            
+            # Initialize CDP session for backend_node_id operations
+            global _cdp_session
+            try:
+                _cdp_session = get_cdp_session(_page)
+                if _cdp_session:
+                    # Enable DOM domain
+                    _cdp_session.send("DOM.enable")
+                    if DEBUG:
+                        print("[CDP] CDP session initialized successfully")
+                else:
+                    if DEBUG:
+                        print("[CDP] Warning: Failed to create CDP session")
+            except Exception as e:
+                if DEBUG:
+                    print(f"[CDP] Error initializing CDP session: {e}")
+                _cdp_session = None
+            
             return driver_pb2.InitResponse(ok=True, start_url=start_url)
         except Exception as e:
             return driver_pb2.InitResponse(ok=False, error=str(e))
@@ -248,21 +299,54 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 continue
             # Normalize keyboard-hint suffixes for menu/option names
             label_out = normalize_label(name) if role in ("menuitem", "option") else name
+            
+            # Generate best selector using all available info
+            best_selector = generate_best_selector(
+                role=role,
+                label=label_out,
+                tag=tag,
+                elem_id=elem_id,
+                href=href,
+                classes=classes,
+                elem_type=elem_type,
+                placeholder=placeholder
+            )
+            
             key = (role, label_out)
             if key in seen:
                 continue
             seen.add(key)
+            
+            # Try to get backend_node_id via CDP
+            backend_node_id = 0  # 0 means not available
+            if _cdp_session:
+                try:
+                    cdp_backend_id = get_backend_node_id_from_element_info(
+                        _cdp_session,
+                        role=role,
+                        name=label_out,
+                        tag=tag,
+                        elem_id=elem_id,
+                        href=href
+                    )
+                    if cdp_backend_id:
+                        backend_node_id = cdp_backend_id
+                except Exception as e:
+                    if DEBUG:
+                        print(f"[CDP] Could not get backend_node_id for {role}/{label_out}: {e}")
+            
             interactables.append({
                 'role': role, 
-                'label': label_out, 
-                'selector': f'role={role}[name="{label_out}"]', 
+                'label': label_out,  # Keep full label for LLM context
+                'selector': best_selector,  # Use improved selector
                 'disabled': disabled,
                 'tag': tag,
                 'classes': classes,
                 'id': elem_id,
                 'href': href,
                 'type': elem_type,
-                'placeholder': placeholder
+                'placeholder': placeholder,
+                'backend_node_id': backend_node_id
             })
 
         # errors
@@ -307,7 +391,8 @@ class DriverService(driver_pb2_grpc.DriverServicer):
                 id=i.get('id', ''),
                 href=i.get('href', ''),
                 type=i.get('type', ''),
-                placeholder=i.get('placeholder', '')
+                placeholder=i.get('placeholder', ''),
+                backend_node_id=i.get('backend_node_id', 0)  # Include backend_node_id
             ) for i in interactables],
             errors=[str(e) for e in (error_messages or [])],
             frames=frames_info,
@@ -498,6 +583,26 @@ Respond with ONLY a number (the idx or -1)."""
 
         try:
             if t == 'click':
+                # Try CDP click first if backend_node_id is available (most reliable)
+                backend_node_id = request.backend_node_id if hasattr(request, 'backend_node_id') else 0
+                if backend_node_id and backend_node_id > 0 and _cdp_session:
+                    try:
+                        if DEBUG:
+                            print(f"  [CDP] Attempting click via backend_node_id: {backend_node_id}")
+                        success = click_by_backend_node_id(_cdp_session, backend_node_id)
+                        if success:
+                            (_page if ctx is _page else ctx.page).wait_for_timeout(1000)
+                            if DEBUG:
+                                print(f"  [CDP] ✓ Click successful via backend_node_id")
+                            return driver_pb2.ActResponse(ok=True)
+                        else:
+                            if DEBUG:
+                                print(f"  [CDP] ⚠️  CDP click failed, falling back to selector")
+                    except Exception as cdp_err:
+                        if DEBUG:
+                            print(f"  [CDP] ⚠️  CDP click error: {cdp_err}, falling back to selector")
+                
+                # Fall back to selector-based click
                 last_err = None
                 for sel in iter_selectors():
                     try:
@@ -564,6 +669,43 @@ Respond with ONLY a number (the idx or -1)."""
                 (_page if ctx is _page else ctx.page).wait_for_timeout(200)
                 return driver_pb2.ActResponse(ok=True)
             elif t == 'type' and request.text:
+                # For type actions, we can use backend_node_id to focus the element via CDP
+                # then use Playwright's fill for better compatibility
+                backend_node_id = request.backend_node_id if hasattr(request, 'backend_node_id') else 0
+                if backend_node_id and backend_node_id > 0 and _cdp_session:
+                    try:
+                        # Try to focus element via CDP, then fill via selector
+                        if DEBUG:
+                            print(f"  [CDP] Focusing element via backend_node_id: {backend_node_id}")
+                        # Focus via CDP
+                        push_result = _cdp_session.send("DOM.pushNodesByBackendIdsToFrontend", {
+                            "backendNodeIds": [backend_node_id]
+                        })
+                        if push_result and "nodeIds" in push_result and push_result["nodeIds"]:
+                            node_id = push_result["nodeIds"][0]
+                            resolve_result = _cdp_session.send("DOM.resolveNode", {"nodeId": node_id})
+                            if resolve_result and "object" in resolve_result and "objectId" in resolve_result["object"]:
+                                object_id = resolve_result["object"]["objectId"]
+                                # Focus the element
+                                _cdp_session.send("Runtime.callFunctionOn", {
+                                    "objectId": object_id,
+                                    "functionDeclaration": "function() { this.focus(); return true; }",
+                                    "returnByValue": True
+                                })
+                                # Now fill via selector (more reliable than CDP fill for complex inputs)
+                                for sel in iter_selectors():
+                                    try:
+                                        loc = ctx.locator(sel).first
+                                        loc.fill(str(request.text))
+                                        (_page if ctx is _page else ctx.page).wait_for_timeout(500)
+                                        return driver_pb2.ActResponse(ok=True)
+                                    except Exception:
+                                        pass
+                    except Exception as cdp_err:
+                        if DEBUG:
+                            print(f"  [CDP] Focus error: {cdp_err}, using selector-only")
+                
+                # Fall back to selector-based type
                 last_err = None
                 for sel in iter_selectors():
                     try:

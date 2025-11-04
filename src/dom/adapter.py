@@ -27,9 +27,17 @@ def convert_interactables_to_dom_state(
 	element_map: Dict[int, InteractableElement] = {}
 	selector_map: SelectorMap = {}
 	
-	backend_node_id = 1  # Start from 1 (0 is reserved)
+	# Use real backend_node_id from gRPC if available, otherwise assign sequential
+	backend_node_id_counter = 1  # For elements without backend_node_id
 	
 	for i, inter_dict in enumerate(capped_interactables):
+		# Use real backend_node_id from CDP if available (non-zero), otherwise assign sequential
+		real_backend_id = inter_dict.get('backend_node_id', 0)
+		if real_backend_id == 0:
+			# No real backend_node_id, assign sequential (but skip 0)
+			real_backend_id = backend_node_id_counter
+			backend_node_id_counter += 1
+		
 		element = InteractableElement(
 			role=inter_dict.get('role', ''),
 			label=inter_dict.get('label', ''),
@@ -42,7 +50,7 @@ def convert_interactables_to_dom_state(
 			type=inter_dict.get('type', ''),
 			placeholder=inter_dict.get('placeholder', ''),
 			text_content=inter_dict.get('label', ''),
-			backend_node_id=backend_node_id,
+			backend_node_id=real_backend_id,  # Use real backend_node_id from CDP
 		)
 		
 		# Build attributes dict
@@ -63,8 +71,7 @@ def convert_interactables_to_dom_state(
 			element.attributes['class'] = ' '.join(element.classes)
 		
 		element_map[i] = element
-		selector_map[backend_node_id] = element
-		backend_node_id += 1
+		selector_map[real_backend_id] = element  # Use real backend_node_id as key
 	
 	# Build simplified tree structure
 	# Since we don't have full DOM hierarchy from gRPC, we'll create a flat-ish structure

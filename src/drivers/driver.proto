@@ -26,6 +26,7 @@ message Interactable {
   string href = 8;
   string type = 9;
   string placeholder = 10;
+  int32 backend_node_id = 11;  // CDP backend_node_id for stable element reference
 }
 message FrameInfo { int32 index = 1; string name = 2; string url = 3; }
 message Focused { string role = 1; string name = 2; string tag = 3; string editable = 4; string text = 5; }
@@ -55,6 +56,7 @@ message ActRequest {
   int32 y = 11;
   string kind = 12;
   string substring = 13;
+  int32 backend_node_id = 14;  // CDP backend_node_id for direct element reference (optional)
 }
 message ActResponse { bool ok = 1; string error = 2; }
 

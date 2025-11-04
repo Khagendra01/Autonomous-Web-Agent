@@ -16,13 +16,19 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
     print(f"\n[EXECUTE] {action.action_type} on '{action.label}' (score: {action.score:.1f})")
     print(f"  Reasoning: {action.reasoning}")
     
-    # Resolve selector from index if using browser-use format
+    # Resolve selector and backend_node_id from index if using browser-use format
     selector = action.selector
+    backend_node_id = None
     if action.index is not None:
         selector_map = state.get('selector_map', {})
         if action.index in selector_map:
-            selector = selector_map[action.index]['selector']
-            print(f"  Resolved index {action.index} -> selector: {selector}")
+            element_info = selector_map[action.index]
+            selector = element_info['selector']
+            backend_node_id = element_info.get('backend_node_id', 0)
+            if backend_node_id and backend_node_id > 0:
+                print(f"  Resolved index {action.index} -> selector: {selector}, backend_node_id: {backend_node_id}")
+            else:
+                print(f"  Resolved index {action.index} -> selector: {selector} (no backend_node_id)")
         else:
             print(f"  ⚠️  Warning: index {action.index} not found in selector_map, using fallback")
     
@@ -55,22 +61,54 @@ def execute_action_node(state: AgentState) -> Dict[str, Any]:
         screenshots = state.get('screenshots') or []
         focused_after_steps = set(state.get('focused_after_steps') or [])
     
-    # Execute via driver
+    # Execute via driver with retry and SmartLocate fallback
     try:
         result = driver_client.act(
             type=payload['type'],
             selector=payload.get('selector'),
-            text=payload.get('text')
+            text=payload.get('text'),
+            backend_node_id=backend_node_id if backend_node_id and backend_node_id > 0 else None
         )
         
         if not result.ok:
-            print(f"  ❌ Action failed: {result.error}")
-            return {
-                'error': result.error,
-                'stuck_count': state['stuck_count'] + 1
-            }
-        
-        print(f"  ✓ Action executed successfully")
+            # Try SmartLocate as fallback if we have a label
+            if action.label and action.action_type == 'click':
+                print(f"  ⚠️  Primary selector failed, trying SmartLocate fallback...")
+                try:
+                    # Use short label for SmartLocate
+                    from ...drivers.utils.selector_generator import extract_short_label
+                    short_label = extract_short_label(action.label, max_words=3)
+                    smart_result = driver_client.smart_locate(
+                        description=short_label,
+                        failed_selector=selector,
+                        use_llm=True
+                    )
+                    if smart_result.ok and smart_result.selector:
+                        print(f"  ✓ SmartLocate found alternative: {smart_result.selector} (strategy: {smart_result.strategy})")
+                        # Retry with smart selector (no backend_node_id for SmartLocate results)
+                        result = driver_client.act(
+                            type=payload['type'],
+                            selector=smart_result.selector,
+                            text=payload.get('text'),
+                            backend_node_id=None
+                        )
+                        if result.ok:
+                            print(f"  ✓ Action executed successfully via SmartLocate")
+                        else:
+                            print(f"  ❌ SmartLocate selector also failed: {result.error}")
+                    else:
+                        print(f"  ❌ SmartLocate failed: {smart_result.error}")
+                except Exception as smart_e:
+                    print(f"  ❌ SmartLocate exception: {smart_e}")
+            
+            if not result.ok:
+                print(f"  ❌ Action failed: {result.error}")
+                return {
+                    'error': result.error,
+                    'stuck_count': state['stuck_count'] + 1
+                }
+        else:
+            print(f"  ✓ Action executed successfully")
 
         # Post-action verification for typing: ensure text became visible; retry once if not
         if action.action_type == 'type' and action.text:
