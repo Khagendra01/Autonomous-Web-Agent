@@ -1,11 +1,10 @@
 python -m src.agents.runner "Create a new message to kgen4295@gmail.com to come early in the meeting in asana"
-python -m src.agents.runner "invite kgen4295@gmail in the asana"
-python -m src.agents.runner "change the task status of Draft Project brief to complete in asana"
+python -m src.agents.runner "change the task status of Schedule kickoff meeting to complete in asana"
+python -m src.agents.runner "logout from asana"
 
 python -m src.agents.runner "create a new project called Softlight in linear"
 python -m src.agents.runner "Write a new issue Make Web Agent B to project Softlight in linear and assign to kgen"
 python -m src.agents.runner "change my name to kgen in linear"
-python -m src.agents.runner "Delete that project Happy in linear"
 python -m src.agents.runner "go to issues and filter by inprogress and change the status of clean up ui to done in linear"
 
 

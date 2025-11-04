@@ -4,6 +4,7 @@ import re
 
 from ..state import AgentState
 from .common import client
+from ..utils.logger import get_logger
 
 
 def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -29,10 +30,40 @@ def _extract_json_payload(text: str) -> Optional[Dict[str, Any]]:
 
 def check_goal_node(state: AgentState) -> Dict[str, Any]:
     """Evaluate whether the goal is complete using LLM with robust, app-agnostic criteria."""
-    print(f"\n[CHECK GOAL] Evaluating goal completion")
-    print(f"  Goal: {state.get('goal', '')}")
-    print(f"  Steps taken: {state.get('step_count', 0)}")
+    logger = get_logger()
+    step = state.get('step_count', 0)
+    logger.section(f"CHECK GOAL Step {step}")
+    
+    goal = state.get('goal', '')
+    instruction = state.get('instruction', '')
+    current_url = state.get('current_url', '')
+    errors = state.get('errors', [])
+    
+    logger.info(f"Evaluating goal completion", {
+        "goal": goal,
+        "instruction": instruction,
+        "current_url": current_url,
+        "steps_taken": step,
+        "errors": errors
+    })
 
+    # Quick heuristic check for logout success: if URL changed to login page and error says "logged out"
+    goal_lower = (goal or instruction or '').lower()
+    is_logout_task = 'logout' in goal_lower or 'log out' in goal_lower or 'sign out' in goal_lower
+    url_is_login = '/login' in current_url or '/signin' in current_url or '/sign-in' in current_url
+    has_logout_error = any('logged out' in str(err).lower() or 'log out' in str(err).lower() for err in errors)
+    
+    if is_logout_task and url_is_login and has_logout_error:
+        logger.info("Quick heuristic: Logout detected via URL change and error message", {
+            "url_changed_to_login": url_is_login,
+            "logout_error_present": has_logout_error
+        })
+        logger.info("Goal reached: True (heuristic)", {
+            "reasoning": f"URL changed to login page ({current_url}) and error message indicates logout successful",
+            "confidence": 0.95
+        })
+        return {'goal_reached': True}
+    
     model_name = state.get('llm_model') or "gpt-4.1"
     recent_actions = (state.get('action_history') or [])[-10:]
 
@@ -50,7 +81,7 @@ def check_goal_node(state: AgentState) -> Dict[str, Any]:
     last_action = action_details[-1] if action_details else None
     if last_action:
         text_part = f" with text '{last_action['text']}'" if last_action.get('text') else ""
-        print(f"  Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
+        logger.info(f"Last action: {last_action['type']} on '{last_action['label']}'{text_part} (score: {last_action.get('score', 0):.1f})")
 
     prompt = f"""Assess whether the user's goal has been completed based on the action history and current state.
 
@@ -86,6 +117,7 @@ Return ONLY valid JSON:
 }}"""
 
     try:
+        logger.llm("Sending goal evaluation prompt to LLM", {"prompt_length": len(prompt)})
         response = client.chat.completions.create(
             model=model_name,
             messages=[
@@ -94,8 +126,9 @@ Return ONLY valid JSON:
             ]
         )
         content = (response.choices[0].message.content or "").strip()
+        logger.llm("Received goal evaluation response", {"response_length": len(content)})
     except Exception as e:
-        print(f"  Evaluation LLM call failed: {e}")
+        logger.error(f"Evaluation LLM call failed: {e}")
         return {'goal_reached': False}
 
     result = _extract_json_payload(content) or {}
@@ -107,14 +140,12 @@ Return ONLY valid JSON:
         confidence = 0.5
     missing_steps = result.get('missing_steps', []) or []
 
-    print(f"  Goal reached: {goal_reached} (confidence: {confidence:.1%})")
-    if reasoning:
-        print(f"  Reasoning: {reasoning}")
-    if missing_steps:
-        try:
-            print(f"  Missing steps: {', '.join(map(str, missing_steps))}")
-        except Exception:
-            print("  Missing steps: (unprintable)")
+    logger.info("Goal evaluation result", {
+        "goal_reached": goal_reached,
+        "confidence": confidence,
+        "reasoning": reasoning,
+        "missing_steps": missing_steps
+    })
 
     return { 'goal_reached': goal_reached }
 

@@ -19,9 +19,9 @@ Examples:
   python -m scripts.record_cookies --app notion --url https://notion.so
         '''
     )
-    parser.add_argument('--app', type=str, default='linear', 
+    parser.add_argument('--app', type=str, default='asana', 
                        help='App name (used for cookie file name, e.g., "github", "gmail")')
-    parser.add_argument('--url', type=str, default='https://linear.app',
+    parser.add_argument('--url', type=str, default='https://app.asana.com',
                        help='Website URL to record cookies from')
     
     args = parser.parse_args()
