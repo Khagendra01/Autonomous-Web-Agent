@@ -98,4 +98,5 @@ python -m src.agents.runner "go to issues and filter by inprogress and change th
 │  - Receives: selectors for actions                    │
 │  - No knowledge of browser-use format                  │
 └─────────────────────────────────────────────────────────┘
+## Ethical considerations
 ```
